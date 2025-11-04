@@ -24,7 +24,7 @@
 //! ```
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -39,7 +39,7 @@ fn main() {
 
         Example:
             git clone https://github.com/steinbergmedia/vst3sdk.git vendor/vst3sdk
-        "
+        ",
     );
 
     println!("cargo:warning=Using VST3 SDK from: {}", sdk_path.display());
@@ -84,14 +84,16 @@ fn find_vst3_sdk() -> Option<PathBuf> {
 }
 
 /// Generate Rust bindings from VST3 C++ headers
-fn generate_bindings(sdk_path: &PathBuf) {
+fn generate_bindings(sdk_path: &Path) {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     // Verify critical directories exist
     let pluginterfaces = sdk_path.join("pluginterfaces");
-    if !pluginterfaces.exists() {
-        panic!("VST3 SDK pluginterfaces directory not found at: {}", pluginterfaces.display());
-    }
+    assert!(
+        pluginterfaces.exists(),
+        "VST3 SDK pluginterfaces directory not found at: {}",
+        pluginterfaces.display()
+    );
 
     // We'll generate bindings for the core VST3 interfaces
     // Start with a minimal set and expand as needed
@@ -163,5 +165,8 @@ fn generate_bindings(sdk_path: &PathBuf) {
         .write_to_file(&bindings_path)
         .expect("Failed to write VST3 bindings");
 
-    println!("cargo:warning=VST3 bindings generated at: {}", bindings_path.display());
+    println!(
+        "cargo:warning=VST3 bindings generated at: {}",
+        bindings_path.display()
+    );
 }
