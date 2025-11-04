@@ -1,0 +1,92 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vvdaw-core",
+    "crates/vvdaw-audio",
+    "crates/vvdaw-plugin",
+    "crates/vvdaw-vst3",
+    "crates/vvdaw-clap",
+    "crates/vvdaw-comms",
+    "crates/vvdaw-ui",
+    "crates/vvdaw-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/vvdaw"
+description = "Visual Virtual DAW - An experimental DAW with 2D/3D game-like interface"
+keywords = ["audio", "daw", "vst3", "music", "bevy"]
+categories = ["multimedia::audio"]
+readme = "README.md"
+
+[workspace.dependencies]
+# Internal crates
+vvdaw-core = { path = "crates/vvdaw-core" }
+vvdaw-audio = { path = "crates/vvdaw-audio" }
+vvdaw-plugin = { path = "crates/vvdaw-plugin" }
+vvdaw-vst3 = { path = "crates/vvdaw-vst3" }
+vvdaw-clap = { path = "crates/vvdaw-clap" }
+vvdaw-comms = { path = "crates/vvdaw-comms" }
+vvdaw-ui = { path = "crates/vvdaw-ui" }
+
+# External dependencies - versions centralized here
+bevy = "0.15"
+cpal = "0.15"
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Lockless communication
+rtrb = "0.3"
+triple_buffer = "8.0"
+crossbeam-channel = "0.5"
+
+# VST3 related (will add proper crates when implementing)
+# vst3-sys = "0.4"  # May still be GPL - waiting for MIT-based version
+
+# Audio utilities
+hound = "3.5"  # WAV file I/O for testing
+dasp = "0.11"  # Sample types and conversions
+
+# General utilities
+parking_lot = "0.12"  # When you absolutely need a mutex (rarely)
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+# missing_docs = "warn"  # Disabled for now during POC phase - enable when API stabilizes
+
+[workspace.lints.clippy]
+# Pedantic lints
+pedantic = { level = "warn", priority = -1 }
+# Specific lints to enforce
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Allow cargo warnings about multiple versions (from dependency tree)
+multiple_crate_versions = "allow"
+# Allow some pedantic lints that are too noisy for audio code
+module_name_repetitions = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+# Audio DSP often needs these patterns
+float_cmp = "allow"
+# Common patterns we want to allow
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+# Disable during POC - will enable when API stabilizes
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+missing_const_for_fn = "allow"
+
+[profile.dev]
+opt-level = 2  # Audio code needs some optimization even in debug
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

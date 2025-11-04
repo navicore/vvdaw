@@ -1,0 +1,23 @@
+[package]
+name = "vvdaw-vst3"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+vvdaw-core.workspace = true
+vvdaw-plugin.workspace = true
+
+# vst3-sys.workspace = true  # Commented out until we add proper VST3 dependencies
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

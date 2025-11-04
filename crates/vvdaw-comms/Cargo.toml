@@ -1,0 +1,21 @@
+[package]
+name = "vvdaw-comms"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+vvdaw-core.workspace = true
+
+rtrb.workspace = true
+triple_buffer.workspace = true
+crossbeam-channel.workspace = true

@@ -1,0 +1,30 @@
+[package]
+name = "vvdaw-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "vvdaw"
+path = "src/main.rs"
+
+[dependencies]
+vvdaw-core.workspace = true
+vvdaw-audio.workspace = true
+vvdaw-plugin.workspace = true
+vvdaw-vst3.workspace = true
+vvdaw-comms.workspace = true
+vvdaw-ui.workspace = true
+
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

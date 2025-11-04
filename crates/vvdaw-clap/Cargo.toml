@@ -1,0 +1,22 @@
+[package]
+name = "vvdaw-clap"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+vvdaw-core.workspace = true
+vvdaw-plugin.workspace = true
+
+# CLAP dependencies will be added when we implement this
+# clap-sys = "0.x"  # TBD
+thiserror.workspace = true

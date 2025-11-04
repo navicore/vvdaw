@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Bevy
+*.wasm
+*.wasm.gz
+
+# Audio files (testing)
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# VST3 plugins for testing
+/plugins/
