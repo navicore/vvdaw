@@ -18,16 +18,22 @@ echo
 # Check if VST3 SDK already exists
 if [ -d "$VST3_SDK_DIR" ]; then
     echo "VST3 SDK already exists at: $VST3_SDK_DIR"
-    echo
-    read -p "Do you want to update it? (y/N) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "==> Updating VST3 SDK..."
-        cd "$VST3_SDK_DIR"
-        git pull
-        echo "✓ VST3 SDK updated"
+
+    # In CI environment, just use existing SDK
+    if [ -n "${CI:-}" ]; then
+        echo "CI environment detected, using existing SDK"
     else
-        echo "Skipping update"
+        echo
+        read -p "Do you want to update it? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo "==> Updating VST3 SDK..."
+            cd "$VST3_SDK_DIR"
+            git pull
+            echo "✓ VST3 SDK updated"
+        else
+            echo "Skipping update"
+        fi
     fi
 else
     # Create vendor directory if it doesn't exist
