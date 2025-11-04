@@ -60,6 +60,9 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v2
 
+      - name: Setup VST3 SDK
+        run: ./scripts/setup-vst3-sdk.sh
+
       - name: Run CI checks
         run: just ci
 

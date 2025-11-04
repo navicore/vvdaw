@@ -24,3 +24,6 @@ Cargo.lock
 
 # VST3 plugins for testing
 /plugins/
+
+# VST3 SDK (downloaded locally, not committed)
+/vendor/vst3sdk/
