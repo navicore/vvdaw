@@ -35,10 +35,10 @@ fn main() -> Result<()> {
 
     // Send Start command to begin audio playback
     tracing::info!("Sending Start command to audio thread");
-    ui_channels
-        .command_tx
-        .push(AudioCommand::Start)
-        .expect("Failed to send Start command");
+    if let Err(e) = ui_channels.command_tx.push(AudioCommand::Start) {
+        tracing::error!("Failed to send Start command: {:?}", e);
+        return Ok(()); // Exit gracefully
+    }
 
     // Poll for events from audio thread
     let start_time = std::time::Instant::now();
@@ -77,10 +77,10 @@ fn main() -> Result<()> {
 
     // Send Stop command
     tracing::info!("Sending Stop command to audio thread");
-    ui_channels
-        .command_tx
-        .push(AudioCommand::Stop)
-        .expect("Failed to send Stop command");
+    if let Err(e) = ui_channels.command_tx.push(AudioCommand::Stop) {
+        tracing::warn!("Failed to send Stop command: {:?}", e);
+        // Continue with shutdown anyway
+    }
 
     // Give audio thread time to process Stop command
     std::thread::sleep(std::time::Duration::from_millis(100));
