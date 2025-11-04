@@ -52,10 +52,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-target-
 
-      # Linux-specific: Install ALSA development libraries for cpal
-      - name: Install ALSA (Linux)
+      # Linux-specific: Install audio dependencies for cpal
+      - name: Install audio dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
 
       - name: Install just
         uses: extractions/setup-just@v2
