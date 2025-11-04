@@ -199,8 +199,21 @@ mod tests {
     use std::time::Duration;
     use vvdaw_comms::create_channels;
 
+    /// Helper to check if audio device is available
+    /// Returns true if we should skip the test
+    fn should_skip_audio_test() -> bool {
+        // Try to create a simple test to see if audio is available
+        let host = cpal::default_host();
+        host.default_output_device().is_none()
+    }
+
     #[test]
     fn test_engine_start_stop() {
+        if should_skip_audio_test() {
+            eprintln!("Skipping test: No audio device available (CI environment)");
+            return;
+        }
+
         // Create engine with default config
         let config = AudioConfig::default();
         let mut engine = AudioEngine::new(config);
@@ -220,6 +233,11 @@ mod tests {
 
     #[test]
     fn test_command_event_flow() {
+        if should_skip_audio_test() {
+            eprintln!("Skipping test: No audio device available (CI environment)");
+            return;
+        }
+
         let config = AudioConfig::default();
         let mut engine = AudioEngine::new(config);
 
@@ -264,6 +282,11 @@ mod tests {
 
     #[test]
     fn test_peak_level_events() {
+        if should_skip_audio_test() {
+            eprintln!("Skipping test: No audio device available (CI environment)");
+            return;
+        }
+
         let config = AudioConfig::default();
         let mut engine = AudioEngine::new(config);
 
@@ -297,6 +320,11 @@ mod tests {
 
     #[test]
     fn test_multiple_start_stop_cycles() {
+        if should_skip_audio_test() {
+            eprintln!("Skipping test: No audio device available (CI environment)");
+            return;
+        }
+
         let config = AudioConfig::default();
         let mut engine = AudioEngine::new(config);
 
