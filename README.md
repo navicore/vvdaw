@@ -35,6 +35,19 @@ This is a cargo workspace containing multiple crates:
 
 ## Building
 
+### Prerequisites
+
+Before building, you need to download the VST3 SDK (MIT licensed):
+
+```bash
+# Download and setup the VST3 SDK
+./scripts/setup-vst3-sdk.sh
+```
+
+This will clone the official Steinberg VST3 SDK into `vendor/vst3sdk`.
+
+### Build Commands
+
 ```bash
 # Build all crates
 cargo build
@@ -53,21 +66,23 @@ cargo test
 
 - **Bevy 0.15** - Game engine for UI
 - **cpal 0.15** - Cross-platform audio I/O
-- **vst3-sys/vst3-com** - VST3 plugin hosting
+- **VST3 SDK** (MIT) - Rust bindings generated via bindgen
 - **rtrb** - Real-time safe ring buffer
 - **triple-buffer** - Lock-free triple buffering
+- **bindgen** - Generate Rust FFI bindings from C/C++ headers
+- **libloading** - Dynamic library loading for plugins
 
 ## Development Status
 
 🚧 **Early Development** - Currently in proof-of-concept phase
 
-### Current Phase: Foundation
+### Current Phase: VST3 Plugin Host
 
 - [x] Workspace structure
 - [x] Core type definitions
 - [x] Communication primitives API
-- [ ] Audio engine implementation
-- [ ] VST3 plugin loading
+- [x] Audio engine implementation (cpal + real-time thread)
+- [~] VST3 plugin loading (bindgen infrastructure in place)
 - [ ] Basic UI
 
 ## License
