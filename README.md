@@ -72,6 +72,16 @@ cargo test
 - **bindgen** - Generate Rust FFI bindings from C/C++ headers
 - **libloading** - Dynamic library loading for plugins
 
+## Examples
+
+See [`crates/vvdaw-app/examples/`](crates/vvdaw-app/examples/) for working examples:
+
+- **load_vst3** - Complete workflow for loading and processing audio through a VST3 plugin
+
+```bash
+cargo run --example load_vst3 -- /path/to/plugin.vst3
+```
+
 ## Development Status
 
 🚧 **Early Development** - Currently in proof-of-concept phase
@@ -82,7 +92,9 @@ cargo test
 - [x] Core type definitions
 - [x] Communication primitives API
 - [x] Audio engine implementation (cpal + real-time thread)
-- [~] VST3 plugin loading (bindgen infrastructure in place)
+- [x] VST3 plugin loading (complete COM interface wrapping)
+- [x] AudioGraph with plugin integration
+- [x] Working VST3 plugin example
 - [ ] Basic UI
 
 ## License
