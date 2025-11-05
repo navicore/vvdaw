@@ -77,7 +77,7 @@ impl Vst3Loader {
         tracing::debug!("Successfully obtained plugin factory");
 
         // Step 5: Query the factory for plugin information
-        let class_count = factory.count_classes()?;
+        let class_count = factory.count_classes();
         tracing::debug!("Plugin factory has {} classes", class_count);
 
         if class_count == 0 {

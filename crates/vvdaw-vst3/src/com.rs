@@ -3,9 +3,48 @@
 //! This module provides safe wrappers around VST3's COM-style interfaces.
 //! VST3 uses manual reference counting and vtable-based polymorphism,
 //! similar to Microsoft COM.
+//!
+//! ## Vtable Layout
+//!
+//! VST3 interfaces inherit from `FUnknown` which provides:
+//! - vtable[0] = queryInterface
+//! - vtable[1] = addRef
+//! - vtable[2] = release
+//!
+//! `IPluginFactory` adds:
+//! - vtable[3] = getFactoryInfo
+//! - vtable[4] = countClasses
+//! - vtable[5] = getClassInfo
+//! - vtable[6] = createInstance
 
 use crate::ffi;
+use std::ffi::c_void;
 use vvdaw_plugin::PluginError;
+
+/// COM result type (tresult in VST3)
+pub type TResult = i32;
+
+/// COM success result
+pub const K_RESULT_OK: TResult = 0;
+
+/// Function pointer type for `IPluginFactory::countClasses`
+///
+/// Returns the number of classes exported by this factory.
+type CountClassesFn = unsafe extern "C" fn(this: *mut c_void) -> i32;
+
+/// Function pointer type for `IPluginFactory::getClassInfo`
+///
+/// Fills a `PClassInfo` structure with information about the class at the specified index.
+type GetClassInfoFn = unsafe extern "C" fn(
+    this: *mut c_void,
+    index: i32,
+    info: *mut ffi::Steinberg_PClassInfo,
+) -> TResult;
+
+/// Function pointer type for `FUnknown::release`
+///
+/// Decrements the reference count and destroys the object if it reaches zero.
+type ReleaseFn = unsafe extern "C" fn(this: *mut c_void) -> u32;
 
 /// Type alias for the `GetPluginFactory` function signature
 ///
@@ -49,18 +88,19 @@ impl PluginFactory {
     }
 
     /// Get the number of classes exported by this factory
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the vtable call fails.
     #[allow(unsafe_code)]
-    #[allow(unused)]
-    #[allow(clippy::unused_self)] // Will be used for vtable call
-    #[allow(clippy::unnecessary_wraps)] // Will return errors once implemented
-    pub fn count_classes(&self) -> Result<i32, PluginError> {
-        // TODO: Call the vtable function
-        // For now, return a placeholder
-        Ok(0)
+    pub fn count_classes(&self) -> i32 {
+        unsafe {
+            // Get the vtable pointer from the interface
+            let vtable_ptr = *(self.ptr.cast::<*const *const c_void>());
+
+            // countClasses is at vtable[4] (after queryInterface, addRef, release, getFactoryInfo)
+            let count_classes_ptr = *vtable_ptr.add(4);
+            let count_classes_fn: CountClassesFn = std::mem::transmute(count_classes_ptr);
+
+            // Call the function
+            count_classes_fn(self.ptr.cast::<c_void>())
+        }
     }
 
     /// Get information about a class by index
@@ -69,21 +109,82 @@ impl PluginFactory {
     ///
     /// Returns an error if the index is out of bounds or the call fails.
     #[allow(unsafe_code)]
-    #[allow(unused)]
-    #[allow(clippy::unused_self)] // Will be used for vtable call
-    pub fn get_class_info(&self, _index: i32) -> Result<ClassInfo, PluginError> {
-        // TODO: Call the vtable function and parse PClassInfo
-        Err(PluginError::FormatError(
-            "get_class_info not yet implemented".to_string(),
-        ))
+    pub fn get_class_info(&self, index: i32) -> Result<ClassInfo, PluginError> {
+        unsafe {
+            // Allocate space for the result
+            let mut class_info: ffi::Steinberg_PClassInfo = std::mem::zeroed();
+
+            // Get the vtable pointer
+            let vtable_ptr = *(self.ptr.cast::<*const *const c_void>());
+
+            // getClassInfo is at vtable[5]
+            let get_class_info_ptr = *vtable_ptr.add(5);
+            let get_class_info_fn: GetClassInfoFn = std::mem::transmute(get_class_info_ptr);
+
+            // Call the function
+            let result = get_class_info_fn(self.ptr.cast::<c_void>(), index, &raw mut class_info);
+
+            if result != K_RESULT_OK {
+                return Err(PluginError::FormatError(format!(
+                    "getClassInfo failed with result: {result}"
+                )));
+            }
+
+            // Convert the C struct to our Rust struct
+            Ok(Self::convert_class_info(&class_info))
+        }
+    }
+
+    /// Convert a VST3 `PClassInfo` to our `ClassInfo` struct
+    ///
+    /// # Safety
+    ///
+    /// The `PClassInfo` must be a valid, initialized struct from VST3.
+    #[allow(unsafe_code)]
+    fn convert_class_info(info: &ffi::Steinberg_PClassInfo) -> ClassInfo {
+        unsafe {
+            // Extract the class ID (TUID is a 16-byte array of i8, convert to u8)
+            let mut class_id = [0u8; 16];
+            for (i, &byte) in info.cid.iter().enumerate() {
+                class_id[i] = byte as u8;
+            }
+
+            // Convert category and name from C strings
+            let category = std::ffi::CStr::from_ptr(info.category.as_ptr())
+                .to_string_lossy()
+                .into_owned();
+
+            let name = std::ffi::CStr::from_ptr(info.name.as_ptr())
+                .to_string_lossy()
+                .into_owned();
+
+            ClassInfo {
+                class_id,
+                cardinality: info.cardinality,
+                category,
+                name,
+            }
+        }
     }
 }
 
 impl Drop for PluginFactory {
     #[allow(unsafe_code)]
     fn drop(&mut self) {
-        // TODO: Call Release() on the COM interface
-        tracing::debug!("Dropping PluginFactory");
+        unsafe {
+            if !self.ptr.is_null() {
+                // Get the vtable pointer
+                let vtable_ptr = *(self.ptr.cast::<*const *const c_void>());
+
+                // release() is at vtable[2] (after queryInterface, addRef)
+                let release_ptr = *vtable_ptr.add(2);
+                let release_fn: ReleaseFn = std::mem::transmute(release_ptr);
+
+                // Call release - this decrements ref count and may destroy the object
+                let ref_count = release_fn(self.ptr.cast::<c_void>());
+                tracing::debug!("Released PluginFactory, ref count now: {}", ref_count);
+            }
+        }
     }
 }
 
