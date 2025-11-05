@@ -20,6 +20,7 @@
 use std::path::Path;
 use vvdaw_plugin::{PluginError, PluginInfo};
 
+mod com;
 mod loader;
 mod wrapper;
 
