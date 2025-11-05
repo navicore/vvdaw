@@ -1,0 +1,156 @@
+//! VST3 plugin wrapper that implements the Plugin trait.
+//!
+//! This module wraps VST3 COM interfaces (`IComponent`, `IAudioProcessor`)
+//! and implements our format-agnostic Plugin trait.
+
+use vvdaw_core::{ChannelCount, Frames, SampleRate};
+use vvdaw_plugin::{AudioBuffer, EventBuffer, ParameterInfo, Plugin, PluginError, PluginInfo};
+
+/// VST3 plugin wrapper
+///
+/// Wraps a VST3 plugin's `IComponent` and `IAudioProcessor` interfaces
+/// and implements our common Plugin trait.
+pub struct Vst3Plugin {
+    info: PluginInfo,
+    // TODO: Add VST3-specific fields:
+    // - library: libloading::Library (keeps the DLL loaded)
+    // - component: *mut IComponent
+    // - processor: *mut IAudioProcessor
+    // - edit_controller: *mut IEditController
+    // Audio configuration
+    sample_rate: SampleRate,
+    block_size: Frames,
+    input_channels: ChannelCount,
+    output_channels: ChannelCount,
+}
+
+impl Vst3Plugin {
+    /// Create a new VST3 plugin wrapper
+    ///
+    /// This is called by the loader after successfully querying the VST3 factory.
+    #[allow(dead_code)]
+    pub(crate) fn new(info: PluginInfo) -> Self {
+        Self {
+            info,
+            sample_rate: 48000,
+            block_size: 512,
+            input_channels: 2,
+            output_channels: 2,
+        }
+    }
+}
+
+impl Plugin for Vst3Plugin {
+    fn info(&self) -> &PluginInfo {
+        &self.info
+    }
+
+    fn initialize(
+        &mut self,
+        sample_rate: SampleRate,
+        max_block_size: Frames,
+    ) -> Result<(), PluginError> {
+        tracing::info!(
+            "Initializing VST3 plugin '{}' at {} Hz, block size {}",
+            self.info.name,
+            sample_rate,
+            max_block_size
+        );
+
+        self.sample_rate = sample_rate;
+        self.block_size = max_block_size;
+
+        // TODO: Call VST3 initialization methods:
+        // 1. component->initialize(context)
+        // 2. processor->setupProcessing(process_setup)
+        // 3. component->setActive(true)
+        // 4. processor->setProcessing(true)
+
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        _audio: &mut AudioBuffer,
+        _events: &EventBuffer,
+    ) -> Result<(), PluginError> {
+        // TODO: Process audio through VST3 plugin
+        // 1. Convert AudioBuffer to VST3's ProcessData
+        // 2. Convert EventBuffer to VST3's input events
+        // 3. Call processor->process(data)
+        // 4. Convert output back
+
+        Ok(())
+    }
+
+    fn set_parameter(&mut self, id: u32, value: f32) -> Result<(), PluginError> {
+        tracing::trace!("Setting parameter {} to {}", id, value);
+
+        // TODO: Set VST3 parameter
+        // edit_controller->setParamNormalized(id, value)
+
+        Ok(())
+    }
+
+    fn get_parameter(&self, _id: u32) -> Result<f32, PluginError> {
+        // TODO: Get VST3 parameter
+        // edit_controller->getParamNormalized(id)
+
+        Ok(0.0)
+    }
+
+    fn parameters(&self) -> Vec<ParameterInfo> {
+        // TODO: Query VST3 parameters
+        // 1. Get parameter count from edit_controller
+        // 2. For each parameter, get ParameterInfo
+        // 3. Convert to our ParameterInfo format
+
+        Vec::new()
+    }
+
+    fn input_channels(&self) -> ChannelCount {
+        self.input_channels
+    }
+
+    fn output_channels(&self) -> ChannelCount {
+        self.output_channels
+    }
+
+    fn deactivate(&mut self) {
+        tracing::info!("Deactivating VST3 plugin '{}'", self.info.name);
+
+        // TODO: Deactivate VST3 plugin
+        // 1. processor->setProcessing(false)
+        // 2. component->setActive(false)
+        // 3. Release COM interfaces
+    }
+}
+
+impl Drop for Vst3Plugin {
+    fn drop(&mut self) {
+        self.deactivate();
+
+        // TODO: Release COM interfaces and unload library
+        tracing::debug!("VST3 plugin '{}' dropped", self.info.name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vst3_plugin_creation() {
+        let info = PluginInfo {
+            name: "Test Plugin".to_string(),
+            vendor: "Test Vendor".to_string(),
+            version: "1.0.0".to_string(),
+            unique_id: "test123".to_string(),
+        };
+
+        let plugin = Vst3Plugin::new(info);
+        assert_eq!(plugin.info().name, "Test Plugin");
+        assert_eq!(plugin.input_channels(), 2);
+        assert_eq!(plugin.output_channels(), 2);
+    }
+}
