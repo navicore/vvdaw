@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 vvdaw-core.workspace = true
+vvdaw-plugin.workspace = true
 
 rtrb.workspace = true
 triple_buffer.workspace = true

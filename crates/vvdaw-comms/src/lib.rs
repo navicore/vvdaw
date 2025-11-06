@@ -6,6 +6,7 @@
 pub use rtrb;
 pub use triple_buffer;
 
+use crossbeam_channel::{Receiver, Sender};
 use vvdaw_core::Sample;
 
 /// Commands that can be sent from UI thread to audio thread
@@ -65,19 +66,25 @@ pub type EventSender = rtrb::Producer<AudioEvent>;
 /// Event receiver (UI thread)
 pub type EventReceiver = rtrb::Consumer<AudioEvent>;
 
+/// Type alias for plugin instance (sent from UI to audio thread)
+pub type PluginInstance = Box<dyn vvdaw_plugin::Plugin>;
+
 /// Create a pair of channels for bidirectional communication
 pub fn create_channels(capacity: usize) -> (UiChannels, AudioChannels) {
     let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(capacity);
     let (evt_tx, evt_rx) = rtrb::RingBuffer::new(capacity);
+    let (plugin_tx, plugin_rx) = crossbeam_channel::unbounded();
 
     let ui_channels = UiChannels {
         command_tx: cmd_tx,
         event_rx: evt_rx,
+        plugin_tx,
     };
 
     let audio_channels = AudioChannels {
         command_rx: cmd_rx,
         event_tx: evt_tx,
+        plugin_rx,
     };
 
     (ui_channels, audio_channels)
@@ -89,6 +96,8 @@ pub struct UiChannels {
     pub command_tx: rtrb::Producer<AudioCommand>,
     /// Event receiver (Audio -> UI)
     pub event_rx: rtrb::Consumer<AudioEvent>,
+    /// Plugin sender (UI -> Audio) - separate channel for non-Clone types
+    pub plugin_tx: Sender<PluginInstance>,
 }
 
 /// Channels for the audio thread (receives commands, sends events)
@@ -97,6 +106,8 @@ pub struct AudioChannels {
     pub command_rx: rtrb::Consumer<AudioCommand>,
     /// Event sender (Audio -> UI)
     pub event_tx: rtrb::Producer<AudioEvent>,
+    /// Plugin receiver (UI -> Audio) - `try_recv` is non-blocking
+    pub plugin_rx: Receiver<PluginInstance>,
 }
 
 #[cfg(test)]
