@@ -6,11 +6,31 @@ use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin, PluginError};
 
 /// A node in the audio graph (typically wraps a plugin)
 pub struct AudioNode {
-    pub id: usize,
-    pub plugin: Box<dyn Plugin>,
+    id: usize,
+    plugin: Box<dyn Plugin>,
     /// Cached input/output channel counts
-    pub inputs: usize,
-    pub outputs: usize,
+    inputs: usize,
+    outputs: usize,
+}
+
+impl AudioNode {
+    /// Get the node's ID
+    #[must_use]
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    /// Get the number of input channels
+    #[must_use]
+    pub fn inputs(&self) -> usize {
+        self.inputs
+    }
+
+    /// Get the number of output channels
+    #[must_use]
+    pub fn outputs(&self) -> usize {
+        self.outputs
+    }
 }
 
 /// Connection between two nodes
@@ -163,31 +183,42 @@ impl AudioGraph {
             return;
         }
 
-        // For now, simple linear processing (no topological sort)
+        // For now, deterministic linear processing (sorted by node ID)
         // TODO: Implement proper topological sort for complex graphs
         let event_buffer = EventBuffer::new();
 
-        for (node_id, node) in &mut self.nodes {
-            // Prepare input buffer (for now, use system input)
-            // TODO: Mix inputs from connected nodes
-            let node_buffer = self.node_buffers.get_mut(node_id).unwrap();
+        // Sort node IDs for deterministic processing order
+        let mut node_ids: Vec<usize> = self.nodes.keys().copied().collect();
+        node_ids.sort_unstable();
 
-            // Create mutable references for AudioBuffer
-            let mut output_refs: Vec<&mut [Sample]> =
-                node_buffer.iter_mut().map(Vec::as_mut_slice).collect();
+        for node_id in node_ids {
+            // SAFETY: We know the node exists because we just got the ID from keys()
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                // Prepare input buffer (for now, use system input)
+                // TODO: Mix inputs from connected nodes
+                if let Some(node_buffer) = self.node_buffers.get_mut(&node_id) {
+                    // Create mutable references for AudioBuffer
+                    let mut output_refs: Vec<&mut [Sample]> =
+                        node_buffer.iter_mut().map(Vec::as_mut_slice).collect();
 
-            let mut audio_buffer = AudioBuffer {
-                inputs: system_input,
-                outputs: &mut output_refs,
-                frames: self.block_size,
-            };
+                    let mut audio_buffer = AudioBuffer {
+                        inputs: system_input,
+                        outputs: &mut output_refs,
+                        frames: self.block_size,
+                    };
 
-            // Process the node
-            if let Err(e) = node.plugin.process(&mut audio_buffer, &event_buffer) {
-                tracing::error!("Plugin {} processing error: {}", node_id, e);
-                // Fill output with silence on error
-                for channel in node_buffer.iter_mut() {
-                    channel.fill(0.0);
+                    // Process the node
+                    // REAL-TIME SAFE: No tracing - just fill with silence on error
+                    if node
+                        .plugin
+                        .process(&mut audio_buffer, &event_buffer)
+                        .is_err()
+                    {
+                        // Fill output with silence on error
+                        for channel in node_buffer.iter_mut() {
+                            channel.fill(0.0);
+                        }
+                    }
                 }
             }
         }

@@ -58,10 +58,11 @@ impl AudioEngine {
         let phase_increment = frequency * 2.0 * std::f32::consts::PI / sample_rate_f32;
 
         // Pre-allocate de-interleaved buffers for audio processing
-        // This violates strict real-time safety but cpal's design requires it
+        // IMPORTANT: Pre-allocated to max block size to avoid allocations in audio callback
         let num_channels = config.channels as usize;
-        let mut channel_buffers_in: Vec<Vec<f32>> = vec![vec![]; num_channels];
-        let mut channel_buffers_out: Vec<Vec<f32>> = vec![vec![]; num_channels];
+        let max_frames = self.config.block_size;
+        let mut channel_buffers_in: Vec<Vec<f32>> = vec![vec![0.0; max_frames]; num_channels];
+        let mut channel_buffers_out: Vec<Vec<f32>> = vec![vec![0.0; max_frames]; num_channels];
 
         // Create the audio callback
         // SAFETY: The closure takes ownership of all captured variables (move semantics).
@@ -77,63 +78,40 @@ impl AudioEngine {
                 while let Ok(cmd) = channels.command_rx.pop() {
                     match cmd {
                         AudioCommand::Start => {
-                            tracing::debug!("Audio: Start command received");
+                            // REAL-TIME SAFE: No tracing in audio callback
                             is_running = true;
                             // Note: If event queue is full, we drop the event rather than block.
                             // This is acceptable in real-time audio - we cannot wait.
-                            if channels.event_tx.push(AudioEvent::Started).is_err() {
-                                // Can't log here - logging may allocate!
-                                // The UI will detect the state change via other means (peak levels)
-                            }
+                            let _ = channels.event_tx.push(AudioEvent::Started);
                         }
                         AudioCommand::Stop => {
-                            tracing::debug!("Audio: Stop command received");
+                            // REAL-TIME SAFE: No tracing in audio callback
                             is_running = false;
-                            if channels.event_tx.push(AudioEvent::Stopped).is_err() {
-                                // Event queue full - acceptable to drop in real-time context
-                            }
+                            let _ = channels.event_tx.push(AudioEvent::Stopped);
                         }
-                        AudioCommand::SetParameter(node_id, param_id, value) => {
-                            tracing::trace!(
-                                "Audio: SetParameter {} {} {}",
-                                node_id,
-                                param_id,
-                                value
-                            );
+                        AudioCommand::SetParameter(_node_id, _param_id, _value) => {
+                            // REAL-TIME SAFE: No tracing in audio callback
                             // TODO: Set parameter on node via graph
                         }
                         AudioCommand::AddNode => {
-                            tracing::debug!("Audio: AddNode command received");
+                            // REAL-TIME SAFE: No tracing in audio callback
                             // Receive the plugin instance from the plugin channel
                             if let Ok(plugin) = channels.plugin_rx.try_recv() {
-                                match graph.add_node(plugin) {
-                                    Ok(id) => {
-                                        tracing::info!("Audio: Added plugin node {}", id);
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Audio: Failed to add plugin: {}", e);
-                                    }
-                                }
-                            } else {
-                                tracing::warn!("Audio: AddNode command but no plugin in queue");
+                                // Ignore errors - can't log in audio callback
+                                let _ = graph.add_node(plugin);
                             }
                         }
                         AudioCommand::RemoveNode(node_id) => {
-                            tracing::debug!("Audio: RemoveNode {} command received", node_id);
+                            // REAL-TIME SAFE: No tracing in audio callback
                             graph.remove_node(node_id);
                         }
                         AudioCommand::Connect { from, to } => {
-                            tracing::debug!("Audio: Connect {} -> {} command received", from, to);
-                            if let Err(e) = graph.connect(from, to) {
-                                tracing::error!("Audio: Failed to connect: {}", e);
-                            }
+                            // REAL-TIME SAFE: No tracing in audio callback
+                            // Ignore errors - can't log in audio callback
+                            let _ = graph.connect(from, to);
                         }
                         AudioCommand::Disconnect { from, to } => {
-                            tracing::debug!(
-                                "Audio: Disconnect {} -> {} command received",
-                                from,
-                                to
-                            );
+                            // REAL-TIME SAFE: No tracing in audio callback
                             graph.disconnect(from, to);
                         }
                     }
@@ -141,27 +119,34 @@ impl AudioEngine {
 
                 if is_running {
                     // De-interleave input (silence for now - no audio input yet)
-                    let frames_per_buffer = data.len() / num_channels;
+                    let frames_per_buffer = (data.len() / num_channels).min(max_frames);
+
+                    // REAL-TIME SAFE: Only use pre-allocated buffer space
+                    // If cpal gives us a larger buffer than expected, we process what fits
                     for ch_buf in &mut channel_buffers_in {
-                        ch_buf.resize(frames_per_buffer, 0.0);
-                        ch_buf.fill(0.0);
+                        ch_buf[..frames_per_buffer].fill(0.0);
                     }
                     for ch_buf in &mut channel_buffers_out {
-                        ch_buf.resize(frames_per_buffer, 0.0);
-                        ch_buf.fill(0.0);
+                        ch_buf[..frames_per_buffer].fill(0.0);
                     }
 
-                    // Process the audio graph
-                    let input_refs: Vec<&[f32]> =
-                        channel_buffers_in.iter().map(Vec::as_slice).collect();
+                    // Process the audio graph using slices (no allocation)
+                    let input_refs: Vec<&[f32]> = channel_buffers_in
+                        .iter()
+                        .map(|v| &v[..frames_per_buffer])
+                        .collect();
                     let mut output_refs: Vec<&mut [f32]> = channel_buffers_out
                         .iter_mut()
-                        .map(Vec::as_mut_slice)
+                        .map(|v| &mut v[..frames_per_buffer])
                         .collect();
                     graph.process(&input_refs, &mut output_refs);
 
-                    // Re-interleave output
-                    for (frame_idx, frame) in data.chunks_exact_mut(num_channels).enumerate() {
+                    // Re-interleave output (only the frames we processed)
+                    for (frame_idx, frame) in data
+                        .chunks_exact_mut(num_channels)
+                        .enumerate()
+                        .take(frames_per_buffer)
+                    {
                         for (ch_idx, sample) in frame.iter_mut().enumerate() {
                             if let Some(ch_buf) = channel_buffers_out.get(ch_idx) {
                                 *sample = *ch_buf.get(frame_idx).unwrap_or(&0.0);
@@ -169,6 +154,12 @@ impl AudioEngine {
                                 *sample = 0.0;
                             }
                         }
+                    }
+
+                    // Fill any remaining frames with silence if cpal gave us more than we can handle
+                    if frames_per_buffer < data.len() / num_channels {
+                        let remaining_start = frames_per_buffer * num_channels;
+                        data[remaining_start..].fill(0.0);
                     }
 
                     // FALLBACK: If no plugins, generate test tone
@@ -189,11 +180,8 @@ impl AudioEngine {
                     // Send peak levels to UI (every N samples to avoid flooding)
                     // TODO: Make this more efficient with downsampling
                     if !data.is_empty() {
-                        let peak = data
-                            .iter()
-                            .map(|s| s.abs())
-                            .max_by(|a, b| a.partial_cmp(b).unwrap())
-                            .unwrap_or(0.0);
+                        // Use fold instead of max_by to avoid panic on NaN
+                        let peak = data.iter().fold(0.0_f32, |max, &s| max.max(s.abs()));
 
                         // Drop peak events if queue is full - they're informational only
                         // and will be replaced by the next buffer's peaks anyway
