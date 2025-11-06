@@ -176,7 +176,7 @@ impl AudioGraph {
     }
 
     /// Update the processing order after graph structure changes
-    /// IMPORTANT: This allocates, so call it when adding/removing nodes, NOT in process()
+    /// IMPORTANT: This allocates, so call it when adding/removing nodes, NOT in `process()`
     fn update_processing_order(&mut self) {
         self.processing_order.clear();
         self.processing_order.extend(self.nodes.keys().copied());
