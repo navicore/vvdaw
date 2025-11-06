@@ -23,3 +23,4 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 dasp.workspace = true
+smallvec.workspace = true

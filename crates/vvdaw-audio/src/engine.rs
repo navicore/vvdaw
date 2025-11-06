@@ -4,6 +4,7 @@ use crate::{AudioConfig, AudioGraph};
 use anyhow::{Context, Result};
 use cpal::Stream;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use smallvec::SmallVec;
 use vvdaw_comms::{AudioChannels, AudioCommand, AudioEvent};
 
 /// The audio engine manages the audio thread and cpal stream
@@ -130,16 +131,21 @@ impl AudioEngine {
                         ch_buf[..frames_per_buffer].fill(0.0);
                     }
 
-                    // Process the audio graph using slices (no allocation)
-                    let input_refs: Vec<&[f32]> = channel_buffers_in
-                        .iter()
-                        .map(|v| &v[..frames_per_buffer])
-                        .collect();
-                    let mut output_refs: Vec<&mut [f32]> = channel_buffers_out
-                        .iter_mut()
-                        .map(|v| &mut v[..frames_per_buffer])
-                        .collect();
-                    graph.process(&input_refs, &mut output_refs);
+                    // Process the audio graph
+                    // REAL-TIME SAFE: SmallVec uses stack storage for <=8 channels (no heap allocation)
+                    // Covers stereo (2ch), 5.1 (6ch), and 7.1 (8ch) without allocating
+                    // Scope ensures mutable references are dropped before re-interleaving
+                    {
+                        let input_refs: SmallVec<[&[f32]; 8]> = channel_buffers_in
+                            .iter()
+                            .map(|v| &v[..frames_per_buffer])
+                            .collect();
+                        let mut output_refs: SmallVec<[&mut [f32]; 8]> = channel_buffers_out
+                            .iter_mut()
+                            .map(|v| &mut v[..frames_per_buffer])
+                            .collect();
+                        graph.process(&input_refs, &mut output_refs);
+                    } // output_refs dropped here, allowing channel_buffers_out to be accessed again
 
                     // Re-interleave output (only the frames we processed)
                     for (frame_idx, frame) in data

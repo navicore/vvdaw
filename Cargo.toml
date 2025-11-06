@@ -55,6 +55,7 @@ dasp = "0.11"  # Sample types and conversions
 # General utilities
 parking_lot = "0.12"  # When you absolutely need a mutex (rarely)
 libloading = "0.8"  # Dynamic library loading for plugins
+smallvec = "1.13"  # Stack-allocated vecs for real-time audio (no heap allocation for small sizes)
 
 # Build dependencies
 bindgen = "0.72"  # Generate Rust bindings from C/C++ headers (Rust 2024 edition support)

@@ -53,6 +53,10 @@ pub struct AudioGraph {
     // Audio buffers for inter-node routing
     // Map from node_id to its output buffer
     node_buffers: HashMap<usize, Vec<Vec<Sample>>>,
+
+    // Pre-computed processing order (sorted node IDs)
+    // Updated when nodes are added/removed to avoid allocating in process()
+    processing_order: Vec<usize>,
 }
 
 impl AudioGraph {
@@ -70,6 +74,7 @@ impl AudioGraph {
             sample_rate,
             block_size,
             node_buffers: HashMap::new(),
+            processing_order: Vec::new(),
         }
     }
 
@@ -113,6 +118,9 @@ impl AudioGraph {
         // Allocate buffer for this node's output
         self.allocate_node_buffer(id, outputs);
 
+        // Update processing order (allocates, but not in audio callback)
+        self.update_processing_order();
+
         tracing::debug!("Added node {} ({} inputs, {} outputs)", id, inputs, outputs);
         Ok(id)
     }
@@ -128,6 +136,9 @@ impl AudioGraph {
 
         // Remove its buffer
         self.node_buffers.remove(&id);
+
+        // Update processing order (allocates, but not in audio callback)
+        self.update_processing_order();
 
         tracing::debug!("Removed node {}", id);
         Some(node)
@@ -164,6 +175,14 @@ impl AudioGraph {
         self.node_buffers.insert(node_id, buffer);
     }
 
+    /// Update the processing order after graph structure changes
+    /// IMPORTANT: This allocates, so call it when adding/removing nodes, NOT in process()
+    fn update_processing_order(&mut self) {
+        self.processing_order.clear();
+        self.processing_order.extend(self.nodes.keys().copied());
+        self.processing_order.sort_unstable();
+    }
+
     /// Allocate all buffers based on current nodes
     fn allocate_buffers(&mut self) {
         self.node_buffers.clear();
@@ -187,11 +206,10 @@ impl AudioGraph {
         // TODO: Implement proper topological sort for complex graphs
         let event_buffer = EventBuffer::new();
 
-        // Sort node IDs for deterministic processing order
-        let mut node_ids: Vec<usize> = self.nodes.keys().copied().collect();
-        node_ids.sort_unstable();
-
-        for node_id in node_ids {
+        // Use pre-computed processing order (no allocation!)
+        // REAL-TIME SAFE: processing_order is updated when nodes are added/removed,
+        // not during audio processing
+        for &node_id in &self.processing_order {
             // SAFETY: We know the node exists because we just got the ID from keys()
             if let Some(node) = self.nodes.get_mut(&node_id) {
                 // Prepare input buffer (for now, use system input)
