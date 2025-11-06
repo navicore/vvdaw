@@ -91,8 +91,17 @@ impl Vst3Loader {
         let class_info = factory.get_class_info(0)?;
         tracing::info!("Loading plugin class: {}", class_info.name);
 
-        // Step 6: Create the plugin wrapper
-        // TODO: Actually create IComponent and IAudioProcessor instances
+        // Step 6: Create IComponent instance
+        let component_ptr =
+            unsafe { factory.create_instance(&class_info.class_id, &crate::com::ICOMPONENT_IID)? };
+
+        // Step 7: Create IAudioProcessor instance by querying IComponent
+        // Note: We query the IComponent for IAudioProcessor interface
+        let processor_ptr = unsafe {
+            factory.create_instance(&class_info.class_id, &crate::com::IAUDIO_PROCESSOR_IID)?
+        };
+
+        // Step 8: Create the plugin wrapper with COM pointers
         let info = PluginInfo {
             name: class_info.name.clone(),
             vendor: "Unknown".to_string(), // TODO: Get from factory info
@@ -100,7 +109,13 @@ impl Vst3Loader {
             unique_id: format!("{:?}", class_info.class_id),
         };
 
-        Ok(Vst3Plugin::new_with_library(info, library, factory))
+        Ok(Vst3Plugin::new_with_library(
+            info,
+            library,
+            factory,
+            component_ptr,
+            processor_ptr,
+        ))
     }
 
     /// Scan a directory for VST3 plugins

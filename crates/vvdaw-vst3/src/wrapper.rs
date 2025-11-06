@@ -20,10 +20,13 @@ pub struct Vst3Plugin {
     library: Library,
     #[allow(dead_code)] // Will be used for COM calls
     factory: PluginFactory,
-    // TODO: Add more COM interfaces:
-    // - component: *mut IComponent
-    // - processor: *mut IAudioProcessor
-    // - edit_controller: *mut IEditController
+
+    // COM interface pointers
+    #[allow(dead_code)] // Will be used for COM calls
+    component: *mut std::ffi::c_void,
+    #[allow(dead_code)] // Will be used for COM calls
+    processor: *mut std::ffi::c_void,
+    // TODO: Add edit_controller when needed
 
     // Audio configuration
     sample_rate: SampleRate,
@@ -44,18 +47,22 @@ impl Vst3Plugin {
         panic!("Use new_with_library for actual VST3 plugins");
     }
 
-    /// Create a new VST3 plugin wrapper with library and factory
+    /// Create a new VST3 plugin wrapper with library, factory, and COM interfaces
     ///
     /// This is the proper constructor called by the loader.
     pub(crate) fn new_with_library(
         info: PluginInfo,
         library: Library,
         factory: PluginFactory,
+        component: *mut std::ffi::c_void,
+        processor: *mut std::ffi::c_void,
     ) -> Self {
         Self {
             info,
             library,
             factory,
+            component,
+            processor,
             sample_rate: 48000,
             block_size: 512,
             input_channels: 2,
@@ -63,6 +70,13 @@ impl Vst3Plugin {
         }
     }
 }
+
+// SAFETY: VST3 plugins are designed to be used from the audio thread.
+// The COM interface pointers are thread-safe as long as all calls are made from
+// the same thread (which our architecture ensures - plugins live on audio thread).
+// The Library and PluginFactory are already Send.
+#[allow(unsafe_code)]
+unsafe impl Send for Vst3Plugin {}
 
 impl Plugin for Vst3Plugin {
     fn info(&self) -> &PluginInfo {
