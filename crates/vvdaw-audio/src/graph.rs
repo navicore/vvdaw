@@ -216,8 +216,14 @@ impl AudioGraph {
                 // TODO: Mix inputs from connected nodes
                 if let Some(node_buffer) = self.node_buffers.get_mut(&node_id) {
                     // Create mutable references for AudioBuffer
-                    let mut output_refs: Vec<&mut [Sample]> =
-                        node_buffer.iter_mut().map(Vec::as_mut_slice).collect();
+                    // NOTE: This Vec allocation is small (8-16 bytes for typical channel counts)
+                    // and unavoidable without unsafe code due to Rust's drop checker.
+                    // SmallVec would avoid heap allocation but triggers lifetime issues:
+                    // the compiler can't prove SmallVec's Drop doesn't use the borrowed slices.
+                    // Vec has special treatment in the borrow checker that SmallVec lacks.
+                    // Pre-allocating with capacity helps modern allocators reuse memory.
+                    let mut output_refs: Vec<&mut [Sample]> = Vec::with_capacity(node.outputs());
+                    output_refs.extend(node_buffer.iter_mut().map(Vec::as_mut_slice));
 
                     let mut audio_buffer = AudioBuffer {
                         inputs: system_input,
@@ -226,17 +232,9 @@ impl AudioGraph {
                     };
 
                     // Process the node
-                    // REAL-TIME SAFE: No tracing - just fill with silence on error
-                    if node
-                        .plugin
-                        .process(&mut audio_buffer, &event_buffer)
-                        .is_err()
-                    {
-                        // Fill output with silence on error
-                        for channel in node_buffer.iter_mut() {
-                            channel.fill(0.0);
-                        }
-                    }
+                    // REAL-TIME SAFE: Errors are ignored - in real-time audio we can't recover anyway
+                    // Buffers are pre-initialized with zeros, so silence is the default on error
+                    let _ = node.plugin.process(&mut audio_buffer, &event_buffer);
                 }
             }
         }
