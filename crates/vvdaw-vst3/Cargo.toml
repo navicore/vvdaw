@@ -40,6 +40,9 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 libloading.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true
@@ -49,3 +52,4 @@ tracing-subscriber.workspace = true
 vvdaw-audio.workspace = true
 vvdaw-comms.workspace = true
 hound.workspace = true
+serial_test = "3.2"

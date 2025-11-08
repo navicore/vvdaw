@@ -4,12 +4,17 @@
 //! Run with: cargo run --example `process_wav` --release [`plugin_path`] [input.wav] [output.wav]
 
 use std::io::Write;
+use tracing_subscriber::EnvFilter;
 use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin};
 
 #[allow(clippy::too_many_lines)] // Example code prioritizes clarity over brevity
 fn main() -> anyhow::Result<()> {
     // Initialize tracing
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
 
     // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();

@@ -17,3 +17,4 @@ workspace = true
 vvdaw-core.workspace = true
 
 thiserror.workspace = true
+serde.workspace = true

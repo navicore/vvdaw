@@ -8,13 +8,18 @@
 //! Effect plugins need input audio - use `process_wav` example for those.
 
 use std::time::Duration;
+use tracing_subscriber::EnvFilter;
 use vvdaw_audio::{AudioConfig, AudioEngine};
 use vvdaw_comms::{AudioCommand, AudioEvent, create_channels};
 use vvdaw_plugin::Plugin;
 
 fn main() -> anyhow::Result<()> {
     // Initialize tracing
-    tracing_subscriber::fmt().with_env_filter("debug").init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")),
+        )
+        .init();
 
     // Default to Noises.vst3 which generates audio
     // Effect plugins like ThingsCrusher need input audio (use process_wav example instead)

@@ -70,7 +70,7 @@ pub struct ParameterInfo {
 }
 
 /// Plugin metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PluginInfo {
     pub name: String,
     pub vendor: String,
