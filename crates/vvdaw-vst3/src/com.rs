@@ -28,9 +28,9 @@ pub type TResult = i32;
 pub const K_RESULT_OK: TResult = 0;
 
 /// `IComponent` interface ID (IID)
-/// FUID: DEE81E1D-8A01-4D64-AF3D-2D2086313B1E
+/// FUID: E831FF31-F2D5-4301-928E-BBEE25697802
 pub const ICOMPONENT_IID: [u8; 16] = [
-    0xDE, 0xE8, 0x1E, 0x1D, 0x8A, 0x01, 0x4D, 0x64, 0xAF, 0x3D, 0x2D, 0x20, 0x86, 0x31, 0x3B, 0x1E,
+    0xE8, 0x31, 0xFF, 0x31, 0xF2, 0xD5, 0x43, 0x01, 0x92, 0x8E, 0xBB, 0xEE, 0x25, 0x69, 0x78, 0x02,
 ];
 
 /// `IAudioProcessor` interface ID (IID)
@@ -67,6 +67,82 @@ type CreateInstanceFn = unsafe extern "C" fn(
 ///
 /// Decrements the reference count and destroys the object if it reaches zero.
 type ReleaseFn = unsafe extern "C" fn(this: *mut c_void) -> u32;
+
+/// Function pointer type for `FUnknown::queryInterface`
+///
+/// Queries for a different interface on the same object.
+#[allow(dead_code)] // Will be used for vtable calls
+type QueryInterfaceFn =
+    unsafe extern "C" fn(this: *mut c_void, iid: *const [i8; 16], obj: *mut *mut c_void) -> TResult;
+
+/// Function pointer type for `IComponent::initialize`
+///
+/// Initializes the component with a host context.
+type ComponentInitializeFn =
+    unsafe extern "C" fn(this: *mut c_void, context: *mut c_void) -> TResult;
+
+/// Function pointer type for `IComponent::setActive`
+///
+/// Activates or deactivates the component.
+type ComponentSetActiveFn = unsafe extern "C" fn(this: *mut c_void, state: u8) -> TResult;
+
+/// Function pointer type for `IAudioProcessor::setupProcessing`
+///
+/// Sets up the audio processing parameters.
+type ProcessorSetupProcessingFn =
+    unsafe extern "C" fn(this: *mut c_void, setup: *const ProcessSetup) -> TResult;
+
+/// Function pointer type for `IAudioProcessor::setProcessing`
+///
+/// Activates or deactivates audio processing.
+type ProcessorSetProcessingFn = unsafe extern "C" fn(this: *mut c_void, state: u8) -> TResult;
+
+/// VST3 `ProcessSetup` structure
+///
+/// Describes the audio processing configuration.
+#[repr(C)]
+pub struct ProcessSetup {
+    pub process_mode: i32,         // 0=realtime, 1=prefetch, 2=offline
+    pub symbolic_sample_size: i32, // 0=32bit, 1=64bit
+    pub max_samples_per_block: i32,
+    pub sample_rate: f64,
+}
+
+/// VST3 `AudioBusBuffers` structure
+///
+/// Contains pointers to audio channel buffers for a single bus.
+#[repr(C)]
+pub struct AudioBusBuffers {
+    pub num_channels: i32,                 // Number of channels in this bus
+    pub silence_flags: u64,                // Bitfield indicating silent channels
+    pub channel_buffers_32: *mut *mut f32, // Array of pointers to 32-bit channel buffers
+    pub channel_buffers_64: *mut *mut f64, // Array of pointers to 64-bit channel buffers
+}
+
+/// VST3 `ProcessData` structure
+///
+/// Contains all data for a single process call.
+#[repr(C)]
+pub struct ProcessData {
+    pub process_mode: i32,                 // 0=realtime, 1=prefetch, 2=offline
+    pub symbolic_sample_size: i32,         // 0=32bit, 1=64bit
+    pub num_samples: i32,                  // Number of samples in this block
+    pub num_inputs: i32,                   // Number of input buses
+    pub num_outputs: i32,                  // Number of output buses
+    pub inputs: *mut AudioBusBuffers,      // Array of input bus buffers
+    pub outputs: *mut AudioBusBuffers,     // Array of output bus buffers
+    pub input_param_changes: *mut c_void,  // IParameterChanges (null for now)
+    pub output_param_changes: *mut c_void, // IParameterChanges (null for now)
+    pub input_events: *mut c_void,         // IEventList (null for now)
+    pub output_events: *mut c_void,        // IEventList (null for now)
+    pub process_context: *mut c_void,      // ProcessContext (null for now)
+}
+
+/// Function pointer type for `IAudioProcessor::process`
+///
+/// Processes audio data.
+type ProcessorProcessFn =
+    unsafe extern "C" fn(this: *mut c_void, data: *mut ProcessData) -> TResult;
 
 /// Type alias for the `GetPluginFactory` function signature
 ///
@@ -274,6 +350,216 @@ pub struct ClassInfo {
     #[allow(dead_code)] // Will be used for plugin filtering
     pub category: String,
     pub name: String,
+}
+
+/// Helper functions for calling VST3 COM methods
+///
+/// These functions provide safe(r) wrappers around raw vtable calls.
+/// Call `FUnknown::queryInterface(iid, obj)`
+///
+/// Queries a COM object for a different interface.
+///
+/// # Safety
+///
+/// The `this` pointer must be valid and point to a valid COM object.
+#[allow(unsafe_code)]
+#[allow(dead_code)] // Will be used for vtable calls
+pub unsafe fn query_interface(
+    this: *mut c_void,
+    interface_id: &[u8; 16],
+) -> Result<*mut c_void, PluginError> {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(this.cast::<*const *const c_void>());
+
+        // queryInterface is at vtable[0]
+        let query_interface_ptr = *vtable_ptr;
+        let query_interface_fn: QueryInterfaceFn = std::mem::transmute(query_interface_ptr);
+
+        // Convert u8 array to i8 array (VST3 uses i8 for TUIDs)
+        let iid: [i8; 16] = std::array::from_fn(|i| interface_id[i] as i8);
+
+        // Output parameter for the queried interface
+        let mut obj: *mut c_void = std::ptr::null_mut();
+
+        // Call queryInterface
+        let result = query_interface_fn(this, &raw const iid, &raw mut obj);
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "queryInterface failed with result: {result}"
+            )));
+        }
+
+        if obj.is_null() {
+            return Err(PluginError::FormatError(
+                "queryInterface returned null".to_string(),
+            ));
+        }
+
+        Ok(obj)
+    }
+}
+
+/// Call `IComponent::initialize(context)`
+///
+/// # Safety
+///
+/// The component pointer must be valid and point to a valid `IComponent` interface.
+#[allow(unsafe_code)]
+pub unsafe fn component_initialize(
+    component: *mut c_void,
+    context: *mut c_void,
+) -> Result<(), PluginError> {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(component.cast::<*const *const c_void>());
+
+        // initialize is at vtable[3] (after queryInterface, addRef, release)
+        let initialize_ptr = *vtable_ptr.add(3);
+        let initialize_fn: ComponentInitializeFn = std::mem::transmute(initialize_ptr);
+
+        // Call initialize
+        let result = initialize_fn(component, context);
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IComponent::initialize failed with result: {result}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+/// Call `IComponent::setActive(state)`
+///
+/// # Safety
+///
+/// The component pointer must be valid and point to a valid `IComponent` interface.
+#[allow(unsafe_code)]
+pub unsafe fn component_set_active(component: *mut c_void, state: bool) -> Result<(), PluginError> {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(component.cast::<*const *const c_void>());
+
+        // IComponent vtable layout:
+        // [0-2] FUnknown: queryInterface, addRef, release
+        // [3-4] IPluginBase: initialize, terminate
+        // [5-11] IComponent: getControllerClassId, setIoMode, getBusCount, getBusInfo,
+        //                    getRoutingInfo, activateBus, setActive
+        // So setActive is at vtable[11]
+        let set_active_ptr = *vtable_ptr.add(11);
+        let set_active_fn: ComponentSetActiveFn = std::mem::transmute(set_active_ptr);
+
+        // Call setActive (TBool is u8 in VST3: 0=false, 1=true)
+        let result = set_active_fn(component, u8::from(state));
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IComponent::setActive failed with result: {result}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+/// Call `IAudioProcessor::setupProcessing(setup)`
+///
+/// # Safety
+///
+/// The processor pointer must be valid and point to a valid `IAudioProcessor` interface.
+#[allow(unsafe_code)]
+pub unsafe fn processor_setup_processing(
+    processor: *mut c_void,
+    setup: &ProcessSetup,
+) -> Result<(), PluginError> {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(processor.cast::<*const *const c_void>());
+
+        // setupProcessing is at vtable[7]
+        // (after queryInterface, addRef, release, setBusArrangements, getBusArrangement,
+        //  canProcessSampleSize, getLatencySamples)
+        let setup_processing_ptr = *vtable_ptr.add(7);
+        let setup_processing_fn: ProcessorSetupProcessingFn =
+            std::mem::transmute(setup_processing_ptr);
+
+        // Call setupProcessing
+        let result = setup_processing_fn(processor, std::ptr::from_ref::<ProcessSetup>(setup));
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IAudioProcessor::setupProcessing failed with result: {result}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+/// Call `IAudioProcessor::setProcessing(state)`
+///
+/// # Safety
+///
+/// The processor pointer must be valid and point to a valid `IAudioProcessor` interface.
+#[allow(unsafe_code)]
+pub unsafe fn processor_set_processing(
+    processor: *mut c_void,
+    state: bool,
+) -> Result<(), PluginError> {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(processor.cast::<*const *const c_void>());
+
+        // setProcessing is at vtable[8]
+        let set_processing_ptr = *vtable_ptr.add(8);
+        let set_processing_fn: ProcessorSetProcessingFn = std::mem::transmute(set_processing_ptr);
+
+        // Call setProcessing (TBool is u8 in VST3: 0=false, 1=true)
+        let result = set_processing_fn(processor, u8::from(state));
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IAudioProcessor::setProcessing failed with result: {result}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+/// Call `IAudioProcessor::process(data)`
+///
+/// # Safety
+///
+/// The processor pointer must be valid and point to a valid `IAudioProcessor` interface.
+/// The `ProcessData` structure must be properly initialized with valid buffer pointers.
+#[allow(unsafe_code)]
+pub unsafe fn processor_process(
+    processor: *mut c_void,
+    data: *mut ProcessData,
+) -> Result<(), PluginError> {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(processor.cast::<*const *const c_void>());
+
+        // process is at vtable[9]
+        let process_ptr = *vtable_ptr.add(9);
+        let process_fn: ProcessorProcessFn = std::mem::transmute(process_ptr);
+
+        // Call process
+        let result = process_fn(processor, data);
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IAudioProcessor::process failed with result: {result}"
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

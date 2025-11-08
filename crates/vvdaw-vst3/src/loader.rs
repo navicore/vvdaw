@@ -92,14 +92,18 @@ impl Vst3Loader {
         tracing::info!("Loading plugin class: {}", class_info.name);
 
         // Step 6: Create IComponent instance
+        tracing::debug!("Creating IComponent instance...");
         let component_ptr =
             unsafe { factory.create_instance(&class_info.class_id, &crate::com::ICOMPONENT_IID)? };
+        tracing::debug!("IComponent created at {:?}", component_ptr);
 
-        // Step 7: Create IAudioProcessor instance by querying IComponent
-        // Note: We query the IComponent for IAudioProcessor interface
+        // Step 7: Query for IAudioProcessor interface
+        // We need to query the component for the processor interface to get the correct vtable
+        tracing::debug!("Querying for IAudioProcessor interface...");
         let processor_ptr = unsafe {
-            factory.create_instance(&class_info.class_id, &crate::com::IAUDIO_PROCESSOR_IID)?
+            crate::com::query_interface(component_ptr, &crate::com::IAUDIO_PROCESSOR_IID)?
         };
+        tracing::debug!("IAudioProcessor obtained at {:?}", processor_ptr);
 
         // Step 8: Create the plugin wrapper with COM pointers
         let info = PluginInfo {
