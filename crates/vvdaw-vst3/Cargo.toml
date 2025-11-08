@@ -43,3 +43,9 @@ libloading.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+vvdaw-audio.workspace = true
+vvdaw-comms.workspace = true
+hound.workspace = true

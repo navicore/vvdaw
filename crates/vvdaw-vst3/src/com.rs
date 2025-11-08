@@ -29,14 +29,16 @@ pub const K_RESULT_OK: TResult = 0;
 
 /// `IComponent` interface ID (IID)
 /// FUID: E831FF31-F2D5-4301-928E-BBEE25697802
+/// From VST3 SDK: `DECLARE_CLASS_IID` (`IComponent`, 0xE831FF31, 0xF2D54301, 0x928EBBEE, 0x25697802)
 pub const ICOMPONENT_IID: [u8; 16] = [
     0xE8, 0x31, 0xFF, 0x31, 0xF2, 0xD5, 0x43, 0x01, 0x92, 0x8E, 0xBB, 0xEE, 0x25, 0x69, 0x78, 0x02,
 ];
 
 /// `IAudioProcessor` interface ID (IID)
-/// FUID: 42043F99-B7DA-453C-A4C5-8B160F11FF8C
+/// FUID: 42043F99-B7DA-453C-A569-E79D9AAEC33D
+/// From VST3 SDK: `DECLARE_CLASS_IID` (`IAudioProcessor`, 0x42043F99, 0xB7DA453C, 0xA569E79D, 0x9AAEC33D)
 pub const IAUDIO_PROCESSOR_IID: [u8; 16] = [
-    0x42, 0x04, 0x3F, 0x99, 0xB7, 0xDA, 0x45, 0x3C, 0xA4, 0xC5, 0x8B, 0x16, 0x0F, 0x11, 0xFF, 0x8C,
+    0x42, 0x04, 0x3F, 0x99, 0xB7, 0xDA, 0x45, 0x3C, 0xA5, 0x69, 0xE7, 0x9D, 0x9A, 0xAE, 0xC3, 0x3D,
 ];
 
 /// Function pointer type for `IPluginFactory::countClasses`
@@ -80,6 +82,26 @@ type QueryInterfaceFn =
 /// Initializes the component with a host context.
 type ComponentInitializeFn =
     unsafe extern "C" fn(this: *mut c_void, context: *mut c_void) -> TResult;
+
+/// Function pointer type for `IComponent::getBusCount`
+///
+/// Gets the number of busesfor a given media type and direction.
+type ComponentGetBusCountFn = unsafe extern "C" fn(
+    this: *mut c_void,
+    media_type: i32,    // 0=audio, 1=event
+    bus_direction: i32, // 0=input, 1=output
+) -> i32;
+
+/// Function pointer type for `IComponent::activateBus`
+///
+/// Activates or deactivates a specific bus.
+type ComponentActivateBusFn = unsafe extern "C" fn(
+    this: *mut c_void,
+    media_type: i32,    // 0=audio, 1=event
+    bus_direction: i32, // 0=input, 1=output
+    bus_index: i32,
+    state: u8, // 0=false, 1=true
+) -> TResult;
 
 /// Function pointer type for `IComponent::setActive`
 ///
@@ -425,6 +447,75 @@ pub unsafe fn component_initialize(
         if result != K_RESULT_OK {
             return Err(PluginError::FormatError(format!(
                 "IComponent::initialize failed with result: {result}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+/// Call `IComponent::getBusCount(type, dir)`
+///
+/// # Safety
+///
+/// The component pointer must be valid and point to a valid `IComponent` interface.
+#[allow(unsafe_code)]
+pub unsafe fn component_get_bus_count(
+    component: *mut c_void,
+    media_type: i32,
+    bus_direction: i32,
+) -> i32 {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(component.cast::<*const *const c_void>());
+
+        // getBusCount is at vtable[7]
+        let get_bus_count_ptr = *vtable_ptr.add(7);
+        let get_bus_count_fn: ComponentGetBusCountFn = std::mem::transmute(get_bus_count_ptr);
+
+        // Call getBusCount
+        get_bus_count_fn(component, media_type, bus_direction)
+    }
+}
+
+/// Call `IComponent::activateBus(type, dir, index, state)`
+///
+/// # Safety
+///
+/// The component pointer must be valid and point to a valid `IComponent` interface.
+#[allow(unsafe_code)]
+pub unsafe fn component_activate_bus(
+    component: *mut c_void,
+    media_type: i32,
+    bus_direction: i32,
+    bus_index: i32,
+    state: bool,
+) -> Result<(), PluginError> {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(component.cast::<*const *const c_void>());
+
+        // IComponent vtable layout:
+        // [0-2] FUnknown: queryInterface, addRef, release
+        // [3-4] IPluginBase: initialize, terminate
+        // [5-11] IComponent: getControllerClassId, setIoMode, getBusCount, getBusInfo,
+        //                    getRoutingInfo, activateBus, setActive
+        // So activateBus is at vtable[10]
+        let activate_bus_ptr = *vtable_ptr.add(10);
+        let activate_bus_fn: ComponentActivateBusFn = std::mem::transmute(activate_bus_ptr);
+
+        // Call activateBus
+        let result = activate_bus_fn(
+            component,
+            media_type,
+            bus_direction,
+            bus_index,
+            u8::from(state),
+        );
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IComponent::activateBus failed with result: {result}"
             )));
         }
 

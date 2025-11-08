@@ -36,6 +36,9 @@ pub struct Vst3Plugin {
     // These avoid allocations in the audio hot path
     input_channel_ptrs: Vec<*mut f32>,
     output_channel_ptrs: Vec<*mut f32>,
+
+    // Track activation state to avoid double-deactivation
+    is_active: bool,
 }
 
 impl Vst3Plugin {
@@ -76,6 +79,7 @@ impl Vst3Plugin {
             output_channels,
             input_channel_ptrs: Vec::with_capacity(input_channels),
             output_channel_ptrs: Vec::with_capacity(output_channels),
+            is_active: false,
         }
     }
 }
@@ -133,7 +137,32 @@ impl Plugin for Vst3Plugin {
             crate::com::processor_setup_processing(self.processor, &process_setup)?;
             tracing::debug!("IAudioProcessor::setupProcessing succeeded");
 
-            // Step 3: Activate the component
+            // Step 3: Check and activate audio buses
+            // Media type: 0=audio, 1=event
+            // Bus direction: 0=input, 1=output
+            let input_bus_count = crate::com::component_get_bus_count(self.component, 0, 0);
+            let output_bus_count = crate::com::component_get_bus_count(self.component, 0, 1);
+
+            tracing::debug!(
+                "Bus counts: {} inputs, {} outputs",
+                input_bus_count,
+                output_bus_count
+            );
+
+            // Activate audio buses if they exist
+            if input_bus_count > 0 {
+                tracing::debug!("Activating input bus 0...");
+                crate::com::component_activate_bus(self.component, 0, 0, 0, true)?;
+                tracing::debug!("Input bus 0 activated");
+            }
+
+            if output_bus_count > 0 {
+                tracing::debug!("Activating output bus 0...");
+                crate::com::component_activate_bus(self.component, 0, 1, 0, true)?;
+                tracing::debug!("Output bus 0 activated");
+            }
+
+            // Step 4: Activate the component
             tracing::debug!("Calling IComponent::setActive(true)...");
             crate::com::component_set_active(self.component, true)?;
             tracing::debug!("IComponent::setActive(true) succeeded");
@@ -146,6 +175,7 @@ impl Plugin for Vst3Plugin {
             tracing::info!("VST3 plugin '{}' initialized successfully", self.info.name);
         }
 
+        self.is_active = true;
         Ok(())
     }
 
@@ -158,6 +188,9 @@ impl Plugin for Vst3Plugin {
     ) -> Result<(), PluginError> {
         // REAL-TIME SAFE: Only log first call to avoid flooding
         static FIRST_CALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+        // Debug counter for logging first few process calls
+        static DEBUG_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
         if FIRST_CALL.swap(false, std::sync::atomic::Ordering::Relaxed) {
             tracing::debug!("VST3 process() called for first time");
         }
@@ -210,8 +243,41 @@ impl Plugin for Vst3Plugin {
                 process_context: std::ptr::null_mut(),
             };
 
+            // DEBUG: Check buffers before processing
+            let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count < 3 {
+                tracing::debug!(
+                    "Before VST3 process: frames={}, inputs={}, outputs={}",
+                    audio.frames,
+                    audio.inputs.len(),
+                    audio.outputs.len()
+                );
+                if let Some(out_ch0) = audio.outputs.first() {
+                    tracing::debug!(
+                        "  Output ch0 before: first 4 samples = [{:.4}, {:.4}, {:.4}, {:.4}]",
+                        out_ch0.first().copied().unwrap_or(0.0),
+                        out_ch0.get(1).copied().unwrap_or(0.0),
+                        out_ch0.get(2).copied().unwrap_or(0.0),
+                        out_ch0.get(3).copied().unwrap_or(0.0)
+                    );
+                }
+            }
+
             // Step 5: Call VST3 processor->process()
             crate::com::processor_process(self.processor, &raw mut process_data)?;
+
+            // DEBUG: Check buffers after processing
+            if count < 3
+                && let Some(out_ch0) = audio.outputs.first()
+            {
+                tracing::debug!(
+                    "  Output ch0 after:  first 4 samples = [{:.4}, {:.4}, {:.4}, {:.4}]",
+                    out_ch0.first().copied().unwrap_or(0.0),
+                    out_ch0.get(1).copied().unwrap_or(0.0),
+                    out_ch0.get(2).copied().unwrap_or(0.0),
+                    out_ch0.get(3).copied().unwrap_or(0.0)
+                );
+            }
         }
 
         Ok(())
@@ -252,6 +318,11 @@ impl Plugin for Vst3Plugin {
 
     #[allow(unsafe_code)] // Required for FFI calls
     fn deactivate(&mut self) {
+        // Only deactivate if currently active (avoid double-deactivation)
+        if !self.is_active {
+            return;
+        }
+
         tracing::info!("Deactivating VST3 plugin '{}'", self.info.name);
 
         unsafe {
@@ -265,20 +336,59 @@ impl Plugin for Vst3Plugin {
                 tracing::error!("Failed to deactivate component: {}", e);
             }
 
+            // Step 3: Deactivate buses (only if they exist)
+            let input_bus_count = crate::com::component_get_bus_count(self.component, 0, 0);
+            let output_bus_count = crate::com::component_get_bus_count(self.component, 0, 1);
+
+            if input_bus_count > 0
+                && let Err(e) = crate::com::component_activate_bus(self.component, 0, 0, 0, false)
+            {
+                tracing::error!("Failed to deactivate input bus: {}", e);
+            }
+
+            if output_bus_count > 0
+                && let Err(e) = crate::com::component_activate_bus(self.component, 0, 1, 0, false)
+            {
+                tracing::error!("Failed to deactivate output bus: {}", e);
+            }
+
             // Note: COM interfaces (component, processor) are released when
             // the plugin is dropped. We don't manually call release() here
             // because Rust's ownership system handles cleanup via Drop.
         }
 
+        self.is_active = false;
         tracing::debug!("VST3 plugin '{}' deactivated", self.info.name);
     }
 }
 
 impl Drop for Vst3Plugin {
+    #[allow(unsafe_code)] // Required for COM cleanup
     fn drop(&mut self) {
+        // Deactivate if still active
         self.deactivate();
 
-        // TODO: Release COM interfaces and unload library
+        // Release COM interfaces
+        unsafe {
+            if !self.processor.is_null() {
+                let vtable_ptr = *(self.processor.cast::<*const *const std::ffi::c_void>());
+                let release_ptr = *vtable_ptr.add(2); // release() is at vtable[2]
+                let release_fn: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32 =
+                    std::mem::transmute(release_ptr);
+                let ref_count = release_fn(self.processor);
+                tracing::debug!("Released IAudioProcessor, ref count now: {}", ref_count);
+            }
+
+            if !self.component.is_null() {
+                let vtable_ptr = *(self.component.cast::<*const *const std::ffi::c_void>());
+                let release_ptr = *vtable_ptr.add(2); // release() is at vtable[2]
+                let release_fn: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32 =
+                    std::mem::transmute(release_ptr);
+                let ref_count = release_fn(self.component);
+                tracing::debug!("Released IComponent, ref count now: {}", ref_count);
+            }
+        }
+
         tracing::debug!("VST3 plugin '{}' dropped", self.info.name);
     }
 }
