@@ -52,12 +52,6 @@ impl AudioEngine {
         // Flag to track if we're running
         let mut is_running = false;
 
-        // Phase accumulator for test tone (prevents discontinuities)
-        let mut phase: f32 = 0.0;
-        let frequency = 440.0; // A4 note
-        let sample_rate_f32 = config.sample_rate.0 as f32;
-        let phase_increment = frequency * 2.0 * std::f32::consts::PI / sample_rate_f32;
-
         // Pre-allocate de-interleaved buffers for audio processing
         // IMPORTANT: Pre-allocated to max block size to avoid allocations in audio callback
         let num_channels = config.channels as usize;
@@ -166,21 +160,6 @@ impl AudioEngine {
                     if frames_per_buffer < data.len() / num_channels {
                         let remaining_start = frames_per_buffer * num_channels;
                         data[remaining_start..].fill(0.0);
-                    }
-
-                    // FALLBACK: If no plugins, generate test tone
-                    // TODO: Remove this once we have plugins working
-                    if channel_buffers_out
-                        .iter()
-                        .all(|buf| buf.iter().all(|&s| s == 0.0))
-                    {
-                        for sample in data.iter_mut() {
-                            *sample = phase.sin() * 0.1;
-                            phase += phase_increment;
-                            if phase >= 2.0 * std::f32::consts::PI {
-                                phase -= 2.0 * std::f32::consts::PI;
-                            }
-                        }
                     }
 
                     // Send peak levels to UI (every N samples to avoid flooding)
@@ -331,48 +310,6 @@ mod tests {
         assert!(received_stopped, "Should receive Stopped event");
 
         // Clean shutdown
-        engine.stop().unwrap();
-    }
-
-    #[test]
-    fn test_peak_level_events() {
-        if should_skip_audio_test() {
-            eprintln!("Skipping test: No audio device available (CI environment)");
-            return;
-        }
-
-        let config = AudioConfig::default();
-        let mut engine = AudioEngine::new(config);
-
-        let (mut ui_channels, audio_channels) = create_channels(256);
-
-        // Start the engine - skip test if audio device can't be opened (CI)
-        if let Err(e) = engine.start(audio_channels) {
-            eprintln!("Skipping test: Audio device unavailable - {e}");
-            return;
-        }
-
-        // Start audio playback
-        ui_channels.command_tx.push(AudioCommand::Start).unwrap();
-
-        // Wait for some audio to be generated
-        std::thread::sleep(Duration::from_millis(500));
-
-        // Check for peak level events
-        let mut received_peak = false;
-        while let Ok(event) = ui_channels.event_rx.pop() {
-            if let AudioEvent::PeakLevel { level, .. } = event {
-                // Test tone should have non-zero peaks
-                if level > 0.0 {
-                    received_peak = true;
-                }
-            }
-        }
-        assert!(
-            received_peak,
-            "Should receive peak level events with non-zero values"
-        );
-
         engine.stop().unwrap();
     }
 
