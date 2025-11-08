@@ -131,7 +131,6 @@ fn handle_control_message(
         ControlMessage::Init {
             sample_rate,
             max_block_size,
-            shm_fd: _,
         } => {
             plugin
                 .initialize(*sample_rate, *max_block_size)

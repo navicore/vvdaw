@@ -5,21 +5,55 @@
 //!
 //! # Architecture
 //!
-//! - **Shared Memory**: Audio buffers are mapped between processes for zero-copy transfer
-//! - **Lock-Free Ring Buffers**: Events and MIDI use `rtrb` for real-time safe communication
-//! - **Atomic Flags**: Process synchronization and crash detection
+//! ## Two Communication Channels
+//!
+//! ### 1. Control Plane (JSON over stdin/stdout)
+//!
+//! Used for **infrequent, non-real-time operations**:
+//! - Plugin initialization (`Init`, `Activate`, `Deactivate`)
+//! - Configuration queries (`GetParameter`)
+//! - One-off parameter changes from UI (e.g., user clicks, preset load)
+//!
+//! **Characteristics**:
+//! - Low frequency (< 10 Hz)
+//! - High latency tolerance (milliseconds OK)
+//! - Human-readable, debuggable format
+//! - Serialization overhead acceptable (~1-10µs)
+//!
+//! ### 2. Data Plane (Shared Memory)
+//!
+//! Used for **high-frequency, real-time operations**:
+//! - Audio buffer transfer (zero-copy)
+//! - Sample-accurate parameter automation via `Event::ParamChange`
+//! - MIDI events (`Event::NoteOn`, `Event::NoteOff`)
+//!
+//! **Characteristics**:
+//! - High frequency (audio rate, ~100 Hz - 1 kHz)
+//! - Zero latency tolerance (microseconds matter)
+//! - Binary format, direct memory access
+//! - No serialization overhead
+//!
+//! ## Why Not JSON for Everything?
+//!
+//! Parameter automation needs **sample-accurate timing** that JSON can't provide:
+//! - JSON over stdin requires parsing (non-deterministic latency)
+//! - Can't specify exact sample offset for parameter changes
+//! - Would add ~1-10µs overhead per change (unacceptable in audio callback)
+//!
+//! Instead, automation goes through `SharedAudioBuffer::events` as `Event::ParamChange`,
+//! which specifies the exact sample within the buffer where the change occurs.
 //!
 //! # Process Flow
 //!
 //! 1. Main process spawns plugin-host subprocess
-//! 2. Subprocess loads plugin and signals ready
-//! 3. Main process sends Init command with shared memory details
+//! 2. Subprocess loads plugin and signals ready via JSON
+//! 3. Main process sends `Init` command (JSON) with shared memory details
 //! 4. For each audio callback:
 //!    - Main writes input buffers to shared memory
-//!    - Main writes events to ring buffer
-//!    - Main sets PROCESS atomic flag
+//!    - Main writes events (MIDI, automation) to shared memory event buffer
+//!    - Main sets `PROCESS` atomic flag
 //!    - Plugin processes audio
-//!    - Plugin sets DONE atomic flag
+//!    - Plugin sets `DONE` atomic flag
 //!    - Main reads output buffers from shared memory
 
 use serde::{Deserialize, Serialize};
@@ -40,9 +74,6 @@ pub enum ControlMessage {
     Init {
         sample_rate: SampleRate,
         max_block_size: Frames,
-        /// File descriptor or handle for shared memory region
-        #[serde(skip)]
-        shm_fd: i32,
     },
 
     /// Activate the plugin (prepare for processing)
@@ -144,7 +175,25 @@ pub struct SharedAudioBuffer {
 }
 
 impl SharedAudioBuffer {
-    /// Create a new shared buffer (called by main process)
+    /// Create a new shared buffer
+    ///
+    /// # Warning
+    ///
+    /// This allocates ~76KB on the stack:
+    /// - Input buffers: 32KB per channel × 2 channels
+    /// - Output buffers: 32KB per channel × 2 channels
+    /// - Event buffer: ~12KB
+    ///
+    /// **This should typically only be called when placing the buffer directly into shared memory,
+    /// not for normal stack allocation.** Consider using `Box::new()` or placement in shared memory
+    /// to avoid stack overflow.
+    ///
+    /// For shared memory placement, the pattern is:
+    /// ```rust,ignore
+    /// let shm = SharedMemory::create("/name", std::mem::size_of::<SharedAudioBuffer>())?;
+    /// let buffer = unsafe { shm.as_mut::<SharedAudioBuffer>() };
+    /// *buffer = SharedAudioBuffer::new();  // Writes directly to shared memory
+    /// ```
     #[allow(clippy::large_stack_arrays)]
     pub fn new() -> Self {
         Self {
@@ -173,14 +222,31 @@ impl SharedAudioBuffer {
 
     /// Wait for a specific state with timeout
     ///
-    /// Returns true if state reached, false if timeout
+    /// Uses hybrid spin-then-sleep strategy:
+    /// - Spins for <100µs (real-time critical, avoid context switch)
+    /// - Yields with exponential backoff for longer waits (avoid burning CPU)
+    ///
+    /// Returns `true` if state reached, `false` if timeout
     pub fn wait_for_state(&self, target: ProcessState, timeout_us: u64) -> bool {
         let start = std::time::Instant::now();
+        let mut sleep_us = 1; // Start with 1µs sleep
+
         while self.get_state() != target {
-            if start.elapsed().as_micros() > u128::from(timeout_us) {
+            let elapsed_us = start.elapsed().as_micros();
+
+            if elapsed_us > u128::from(timeout_us) {
                 return false;
             }
-            std::hint::spin_loop();
+
+            // Spin loop for the first 100µs (real-time critical)
+            if elapsed_us < 100 {
+                std::hint::spin_loop();
+            } else {
+                // After 100µs, yield to avoid burning CPU
+                // Exponential backoff: 1µs, 2µs, 4µs, ..., up to 100µs
+                std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+                sleep_us = (sleep_us * 2).min(100);
+            }
         }
         true
     }

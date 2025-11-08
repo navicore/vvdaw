@@ -25,6 +25,10 @@ pub struct SharedMemory {
 
     /// Name of the shared memory region (for cleanup)
     name: String,
+
+    /// Whether this instance created the shared memory region
+    /// Only the creator should unlink the shared memory on drop
+    is_creator: bool,
 }
 
 impl SharedMemory {
@@ -112,6 +116,7 @@ impl SharedMemory {
             ptr: NonNull::new(ptr.cast::<u8>()).unwrap(),
             size,
             name: name.to_string(),
+            is_creator: true,
         })
     }
 
@@ -175,6 +180,7 @@ impl SharedMemory {
             ptr: NonNull::new(ptr.cast::<u8>()).unwrap(),
             size,
             name: name.to_string(),
+            is_creator: false,
         })
     }
 
@@ -223,10 +229,12 @@ impl Drop for SharedMemory {
             libc::munmap(self.ptr.as_ptr().cast(), self.size);
             libc::close(self.fd);
 
-            // Unlink the shared memory object (only creator should do this)
-            // In a production system, we'd track who created it
-            let c_name = std::ffi::CString::new(self.name.as_str()).unwrap();
-            libc::shm_unlink(c_name.as_ptr());
+            // Only the creator should unlink the shared memory object
+            // This prevents race conditions where both creator and opener try to unlink
+            if self.is_creator {
+                let c_name = std::ffi::CString::new(self.name.as_str()).unwrap();
+                libc::shm_unlink(c_name.as_ptr());
+            }
         }
     }
 }
