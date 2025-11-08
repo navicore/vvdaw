@@ -175,27 +175,61 @@ pub struct SharedAudioBuffer {
 }
 
 impl SharedAudioBuffer {
-    /// Create a new shared buffer
+    /// Create a new shared buffer on the heap (safe alternative)
     ///
-    /// # Warning
+    /// This allocates the buffer in a `Box` to avoid stack overflow.
+    /// Use this when you need a standalone buffer for testing or other non-shared-memory use cases.
+    ///
+    /// For shared memory placement, use [`new_in_place()`](Self::new_in_place) instead.
+    #[allow(unsafe_code)]
+    #[allow(clippy::large_stack_arrays)] // We're using Box::new_uninit, so this is heap-allocated
+    pub fn boxed() -> Box<Self> {
+        // Box::new would use stack temporarily, so we use Box::new_uninit
+        // and initialize in-place to allocate directly on the heap
+        unsafe {
+            let mut uninit = Box::<Self>::new_uninit();
+            let ptr = uninit.as_mut_ptr();
+
+            // Write fields directly to uninitialized memory (no stack allocation)
+            std::ptr::addr_of_mut!((*ptr).state).write(AtomicU32::new(ProcessState::Idle as u32));
+            std::ptr::addr_of_mut!((*ptr).frame_count).write(AtomicU32::new(0));
+            std::ptr::addr_of_mut!((*ptr).inputs).write([[0.0; 8192]; MAX_CHANNELS]);
+            std::ptr::addr_of_mut!((*ptr).outputs).write([[0.0; 8192]; MAX_CHANNELS]);
+            std::ptr::addr_of_mut!((*ptr).event_count).write(AtomicU32::new(0));
+            std::ptr::addr_of_mut!((*ptr).events).write(
+                [Event::NoteOff {
+                    channel: 0,
+                    note: 0,
+                    sample_offset: 0,
+                }; MAX_EVENTS],
+            );
+
+            uninit.assume_init()
+        }
+    }
+
+    /// Create a new shared buffer in-place (for shared memory)
+    ///
+    /// # Safety
     ///
     /// This allocates ~76KB on the stack:
     /// - Input buffers: 32KB per channel × 2 channels
     /// - Output buffers: 32KB per channel × 2 channels
     /// - Event buffer: ~12KB
     ///
-    /// **This should typically only be called when placing the buffer directly into shared memory,
-    /// not for normal stack allocation.** Consider using `Box::new()` or placement in shared memory
-    /// to avoid stack overflow.
+    /// **This is marked unsafe because it can easily cause stack overflow if called directly.**
     ///
-    /// For shared memory placement, the pattern is:
+    /// Only use this when writing directly into shared memory (not on stack):
     /// ```rust,ignore
     /// let shm = SharedMemory::create("/name", std::mem::size_of::<SharedAudioBuffer>())?;
     /// let buffer = unsafe { shm.as_mut::<SharedAudioBuffer>() };
-    /// *buffer = SharedAudioBuffer::new();  // Writes directly to shared memory
+    /// *buffer = unsafe { SharedAudioBuffer::new_in_place() };
     /// ```
+    ///
+    /// For normal usage, use [`boxed()`](Self::boxed) instead.
+    #[allow(unsafe_code)]
     #[allow(clippy::large_stack_arrays)]
-    pub fn new() -> Self {
+    pub unsafe fn new_in_place() -> Self {
         Self {
             state: AtomicU32::new(ProcessState::Idle as u32),
             frame_count: AtomicU32::new(0),
@@ -252,11 +286,7 @@ impl SharedAudioBuffer {
     }
 }
 
-impl Default for SharedAudioBuffer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Note: No Default impl - use SharedAudioBuffer::boxed() instead to avoid stack overflow
 
 /// Event types that can be sent between processes
 ///
@@ -369,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_shared_buffer_state() {
-        let buffer = SharedAudioBuffer::new();
+        let buffer = SharedAudioBuffer::boxed();
         assert_eq!(buffer.get_state(), ProcessState::Idle);
 
         buffer.set_state(ProcessState::Process);

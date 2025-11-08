@@ -25,9 +25,8 @@
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::process;
-use std::sync::Arc;
 use vvdaw_plugin::Plugin;
-use vvdaw_vst3::{ControlMessage, ProcessState, ResponseMessage, SharedAudioBuffer};
+use vvdaw_vst3::{ControlMessage, ProcessState, ResponseMessage, SharedAudioBuffer, SharedMemory};
 
 fn main() {
     // Set up panic handler to notify main process of crashes
@@ -66,10 +65,28 @@ fn main() {
     let info = plugin.info().clone();
 
     // Open shared memory region
-    // TODO: Platform-specific shared memory implementation
-    // For now, we'll use a placeholder
-    #[allow(clippy::let_underscore_untyped)]
-    let _ = shm_name; // Placeholder - will be used when implementing shared memory
+    #[allow(clippy::used_underscore_binding)]
+    let _shared_memory =
+        match SharedMemory::open(shm_name, std::mem::size_of::<SharedAudioBuffer>()) {
+            Ok(shm) => shm,
+            Err(e) => {
+                let error = ResponseMessage::Error {
+                    message: format!("Failed to open shared memory: {e}"),
+                };
+                println!("{}", serde_json::to_string(&error).unwrap());
+                process::exit(1);
+            }
+        };
+
+    // Get reference to shared audio buffer (kept for future audio processing implementation)
+    // Safety: SharedMemory is valid and the buffer layout matches SharedAudioBuffer
+    #[allow(unsafe_code)]
+    #[allow(clippy::used_underscore_binding)]
+    let _shared_buffer = unsafe { _shared_memory.as_ref::<SharedAudioBuffer>() };
+
+    // TODO: Spawn audio processing thread that monitors shared_buffer state
+    // and calls audio_processing_loop when needed. For now, shared memory
+    // is opened successfully to validate the protocol.
 
     // Send Ready response
     let ready = ResponseMessage::Ready { info };
@@ -172,10 +189,7 @@ fn handle_control_message(
 
 /// Audio processing loop (will be called from main loop when implemented)
 #[allow(dead_code)]
-fn audio_processing_loop(
-    _plugin: &mut vvdaw_vst3::Vst3Plugin,
-    shared_buffer: &Arc<SharedAudioBuffer>,
-) {
+fn audio_processing_loop(_plugin: &mut vvdaw_vst3::Vst3Plugin, shared_buffer: &SharedAudioBuffer) {
     loop {
         // Wait for Process signal
         if !shared_buffer.wait_for_state(ProcessState::Process, 1_000_000) {

@@ -232,8 +232,13 @@ impl Drop for SharedMemory {
             // Only the creator should unlink the shared memory object
             // This prevents race conditions where both creator and opener try to unlink
             if self.is_creator {
-                let c_name = std::ffi::CString::new(self.name.as_str()).unwrap();
-                libc::shm_unlink(c_name.as_ptr());
+                // Best effort cleanup - if CString conversion fails (null byte in name),
+                // we can't unlink but shouldn't panic in Drop
+                if let Ok(c_name) = std::ffi::CString::new(self.name.as_str()) {
+                    libc::shm_unlink(c_name.as_ptr());
+                }
+                // If conversion fails, shared memory will leak but won't crash
+                // This should never happen if names are properly validated at creation
             }
         }
     }
