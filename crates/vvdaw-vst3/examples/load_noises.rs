@@ -2,11 +2,16 @@
 //!
 //! Run with: cargo run --example `load_noises` --release
 
+use tracing_subscriber::EnvFilter;
 use vvdaw_plugin::Plugin;
 
 fn main() {
     // Initialize tracing
-    tracing_subscriber::fmt().with_env_filter("debug").init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")),
+        )
+        .init();
 
     println!("Loading Noises.vst3 plugin...\n");
 

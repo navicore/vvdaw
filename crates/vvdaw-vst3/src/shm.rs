@@ -39,13 +39,14 @@ impl SharedMemory {
     /// - The memory is properly synchronized between processes
     #[allow(unsafe_code)]
     pub fn create(name: &str, size: usize) -> Result<Self, PluginError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(unix)]
         {
             Self::create_posix(name, size)
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(unix))]
         {
+            let _ = (name, size); // Suppress unused warnings on Windows
             Err(PluginError::FormatError(
                 "Shared memory not implemented for this platform".to_string(),
             ))
@@ -117,13 +118,14 @@ impl SharedMemory {
     /// Open an existing shared memory region
     #[allow(unsafe_code)]
     pub fn open(name: &str, size: usize) -> Result<Self, PluginError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(unix)]
         {
             Self::open_posix(name, size)
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(unix))]
         {
+            let _ = (name, size); // Suppress unused warnings on Windows
             Err(PluginError::FormatError(
                 "Shared memory not implemented for this platform".to_string(),
             ))
