@@ -85,7 +85,7 @@ type ComponentInitializeFn =
 
 /// Function pointer type for `IComponent::getBusCount`
 ///
-/// Gets the number of busesfor a given media type and direction.
+/// Gets the number of buses for a given media type and direction.
 type ComponentGetBusCountFn = unsafe extern "C" fn(
     this: *mut c_void,
     media_type: i32,    // 0=audio, 1=event
@@ -420,6 +420,30 @@ pub unsafe fn query_interface(
         }
 
         Ok(obj)
+    }
+}
+
+/// Call `FUnknown::release()`
+///
+/// Decrements the reference count on a COM interface and potentially destroys the object.
+///
+/// # Safety
+///
+/// The `this` pointer must be valid and point to a valid COM object.
+#[allow(unsafe_code)]
+pub unsafe fn release_interface(this: *mut c_void) {
+    unsafe {
+        if !this.is_null() {
+            // Get the vtable pointer
+            let vtable_ptr = *(this.cast::<*const *const c_void>());
+
+            // release() is at vtable[2] (after queryInterface, addRef)
+            let release_ptr = *vtable_ptr.add(2);
+            let release_fn: ReleaseFn = std::mem::transmute(release_ptr);
+
+            // Call release - this decrements ref count and may destroy the object
+            release_fn(this);
+        }
     }
 }
 

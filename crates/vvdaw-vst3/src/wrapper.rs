@@ -196,32 +196,59 @@ impl Plugin for Vst3Plugin {
         }
 
         unsafe {
-            // Step 1: Update input channel pointers
+            // Step 1: Validate buffer counts match expected channels
+            // This prevents accessing invalid pointers in the channel arrays
+            let actual_input_channels = audio.inputs.len().min(self.input_channels);
+            let actual_output_channels = audio.outputs.len().min(self.output_channels);
+
+            if audio.inputs.len() < self.input_channels {
+                tracing::warn!(
+                    "Audio buffer has {} input channels but plugin expects {}",
+                    audio.inputs.len(),
+                    self.input_channels
+                );
+            }
+
+            if audio.outputs.len() < self.output_channels {
+                tracing::warn!(
+                    "Audio buffer has {} output channels but plugin expects {}",
+                    audio.outputs.len(),
+                    self.output_channels
+                );
+            }
+
+            // Step 2: Update input channel pointers (only for actual available channels)
             // VST3 expects an array of pointers to channel buffers
-            for (i, input_slice) in audio.inputs.iter().enumerate() {
+            for (i, input_slice) in audio.inputs.iter().enumerate().take(actual_input_channels) {
                 if i < self.input_channel_ptrs.len() {
                     // Cast away const - VST3 may write to input buffers for in-place processing
                     self.input_channel_ptrs[i] = input_slice.as_ptr().cast_mut();
                 }
             }
 
-            // Step 2: Update output channel pointers
-            for (i, output_slice) in audio.outputs.iter_mut().enumerate() {
+            // Step 3: Update output channel pointers (only for actual available channels)
+            for (i, output_slice) in audio
+                .outputs
+                .iter_mut()
+                .enumerate()
+                .take(actual_output_channels)
+            {
                 if i < self.output_channel_ptrs.len() {
                     self.output_channel_ptrs[i] = output_slice.as_mut_ptr();
                 }
             }
 
-            // Step 3: Create AudioBusBuffers for input and output
+            // Step 4: Create AudioBusBuffers for input and output
+            // IMPORTANT: Use actual channel counts to prevent VST3 from accessing invalid pointers
             let mut input_bus = crate::com::AudioBusBuffers {
-                num_channels: self.input_channels as i32,
+                num_channels: actual_input_channels as i32,
                 silence_flags: 0,
                 channel_buffers_32: self.input_channel_ptrs.as_mut_ptr(),
                 channel_buffers_64: std::ptr::null_mut(),
             };
 
             let mut output_bus = crate::com::AudioBusBuffers {
-                num_channels: self.output_channels as i32,
+                num_channels: actual_output_channels as i32,
                 silence_flags: 0,
                 channel_buffers_32: self.output_channel_ptrs.as_mut_ptr(),
                 channel_buffers_64: std::ptr::null_mut(),
@@ -368,24 +395,16 @@ impl Drop for Vst3Plugin {
         // Deactivate if still active
         self.deactivate();
 
-        // Release COM interfaces
+        // Release COM interfaces using helper function
         unsafe {
             if !self.processor.is_null() {
-                let vtable_ptr = *(self.processor.cast::<*const *const std::ffi::c_void>());
-                let release_ptr = *vtable_ptr.add(2); // release() is at vtable[2]
-                let release_fn: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32 =
-                    std::mem::transmute(release_ptr);
-                let ref_count = release_fn(self.processor);
-                tracing::debug!("Released IAudioProcessor, ref count now: {}", ref_count);
+                tracing::debug!("Releasing IAudioProcessor interface");
+                crate::com::release_interface(self.processor);
             }
 
             if !self.component.is_null() {
-                let vtable_ptr = *(self.component.cast::<*const *const std::ffi::c_void>());
-                let release_ptr = *vtable_ptr.add(2); // release() is at vtable[2]
-                let release_fn: unsafe extern "C" fn(*mut std::ffi::c_void) -> u32 =
-                    std::mem::transmute(release_ptr);
-                let ref_count = release_fn(self.component);
-                tracing::debug!("Released IComponent, ref count now: {}", ref_count);
+                tracing::debug!("Releasing IComponent interface");
+                crate::com::release_interface(self.component);
             }
         }
 
