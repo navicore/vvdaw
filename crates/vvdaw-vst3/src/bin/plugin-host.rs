@@ -25,9 +25,17 @@
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::process;
+use std::sync::{Arc, Mutex};
 use vvdaw_plugin::Plugin;
 use vvdaw_vst3::{ControlMessage, ProcessState, ResponseMessage, SharedAudioBuffer, SharedMemory};
 
+/// Send-safe wrapper for shared audio buffer pointer
+struct SendSharedBuffer(*const SharedAudioBuffer);
+
+#[allow(unsafe_code)]
+unsafe impl Send for SendSharedBuffer {}
+
+#[allow(clippy::too_many_lines)]
 fn main() {
     // Set up panic handler to notify main process of crashes
     std::panic::set_hook(Box::new(|panic_info| {
@@ -42,7 +50,9 @@ fn main() {
         let error = ResponseMessage::Error {
             message: "Usage: plugin-host <path-to-plugin.vst3> <shm-name>".to_string(),
         };
-        println!("{}", serde_json::to_string(&error).unwrap());
+        let json = serde_json::to_string(&error)
+            .unwrap_or_else(|_| r#"{"Error":{"message":"Usage error"}}"#.to_string());
+        println!("{json}");
         process::exit(1);
     }
 
@@ -50,13 +60,15 @@ fn main() {
     let shm_name = &args[2];
 
     // Load the plugin
-    let mut plugin = match vvdaw_vst3::load_plugin(plugin_path) {
+    let plugin = match vvdaw_vst3::load_plugin(plugin_path) {
         Ok(p) => p,
         Err(e) => {
             let error = ResponseMessage::Error {
                 message: format!("Failed to load plugin: {e}"),
             };
-            println!("{}", serde_json::to_string(&error).unwrap());
+            let json = serde_json::to_string(&error)
+                .unwrap_or_else(|_| r#"{"Error":{"message":"Plugin load error"}}"#.to_string());
+            println!("{json}");
             process::exit(1);
         }
     };
@@ -73,25 +85,41 @@ fn main() {
                 let error = ResponseMessage::Error {
                     message: format!("Failed to open shared memory: {e}"),
                 };
-                println!("{}", serde_json::to_string(&error).unwrap());
+                let json = serde_json::to_string(&error).unwrap_or_else(|_| {
+                    r#"{"Error":{"message":"Shared memory error"}}"#.to_string()
+                });
+                println!("{json}");
                 process::exit(1);
             }
         };
 
-    // Get reference to shared audio buffer (kept for future audio processing implementation)
+    // Get pointer to shared audio buffer
     // Safety: SharedMemory is valid and the buffer layout matches SharedAudioBuffer
     #[allow(unsafe_code)]
     #[allow(clippy::used_underscore_binding)]
-    let _shared_buffer = unsafe { _shared_memory.as_ref::<SharedAudioBuffer>() };
+    let shared_buffer_ptr = SendSharedBuffer(unsafe {
+        std::ptr::from_ref(_shared_memory.as_ref::<SharedAudioBuffer>())
+    });
 
-    // TODO: Spawn audio processing thread that monitors shared_buffer state
-    // and calls audio_processing_loop when needed. For now, shared memory
-    // is opened successfully to validate the protocol.
+    // Wrap plugin in Arc<Mutex<>> for thread-safe sharing
+    let plugin = Arc::new(Mutex::new(plugin));
+
+    // Clone Arc for audio thread (increments reference count)
+    let plugin_for_audio = plugin.clone();
+
+    // Spawn audio processing thread
+    let audio_thread = std::thread::spawn(move || {
+        audio_processing_loop(&plugin_for_audio, &shared_buffer_ptr);
+    });
 
     // Send Ready response
     let ready = ResponseMessage::Ready { info };
-    println!("{}", serde_json::to_string(&ready).unwrap());
-    io::stdout().flush().unwrap();
+    let json =
+        serde_json::to_string(&ready).unwrap_or_else(|_| r#"{"Ready":{"info":null}}"#.to_string());
+    println!("{json}");
+    if let Err(e) = io::stdout().flush() {
+        eprintln!("Failed to flush stdout: {e}");
+    }
 
     // Process control messages from stdin
     let stdin = io::stdin();
@@ -113,35 +141,47 @@ fn main() {
                 let error = ResponseMessage::Error {
                     message: format!("Failed to parse control message: {e}"),
                 };
-                println!("{}", serde_json::to_string(&error).unwrap());
-                io::stdout().flush().unwrap();
+                let json = serde_json::to_string(&error)
+                    .unwrap_or_else(|_| r#"{"Error":{"message":"Parse error"}}"#.to_string());
+                println!("{json}");
+                let _ = io::stdout().flush();
                 continue;
             }
         };
 
         // Handle control message
-        match handle_control_message(&mut plugin, &message) {
+        match handle_control_message(&plugin, &message) {
             Ok(response) => {
                 if let Some(resp) = response {
-                    println!("{}", serde_json::to_string(&resp).unwrap());
-                    io::stdout().flush().unwrap();
+                    let json = serde_json::to_string(&resp).unwrap_or_else(|_| {
+                        r#"{"Error":{"message":"Response serialization error"}}"#.to_string()
+                    });
+                    println!("{json}");
+                    let _ = io::stdout().flush();
                 }
             }
             Err(e) => {
                 let error = ResponseMessage::Error { message: e };
-                println!("{}", serde_json::to_string(&error).unwrap());
-                io::stdout().flush().unwrap();
+                let json = serde_json::to_string(&error)
+                    .unwrap_or_else(|_| r#"{"Error":{"message":"Handler error"}}"#.to_string());
+                println!("{json}");
+                let _ = io::stdout().flush();
             }
         }
     }
 
     // Clean up
-    plugin.deactivate();
+    if let Ok(mut plugin) = plugin.lock() {
+        plugin.deactivate();
+    }
+
+    // Wait for audio thread to finish (it won't, but join anyway for clean shutdown)
+    let _ = audio_thread.join();
 }
 
 /// Handle a control message and return optional response
 fn handle_control_message(
-    plugin: &mut vvdaw_vst3::Vst3Plugin,
+    plugin: &Arc<Mutex<vvdaw_vst3::Vst3Plugin>>,
     message: &ControlMessage,
 ) -> Result<Option<ResponseMessage>, String> {
     match message {
@@ -150,6 +190,8 @@ fn handle_control_message(
             max_block_size,
         } => {
             plugin
+                .lock()
+                .map_err(|e| format!("Plugin lock poisoned: {e}"))?
                 .initialize(*sample_rate, *max_block_size)
                 .map_err(|e| format!("Failed to initialize plugin: {e}"))?;
             Ok(Some(ResponseMessage::Initialized))
@@ -162,17 +204,25 @@ fn handle_control_message(
         }
 
         ControlMessage::Deactivate => {
-            plugin.deactivate();
+            plugin
+                .lock()
+                .map_err(|e| format!("Plugin lock poisoned: {e}"))?
+                .deactivate();
             Ok(Some(ResponseMessage::Deactivated))
         }
 
         ControlMessage::Shutdown => {
-            plugin.deactivate();
+            plugin
+                .lock()
+                .map_err(|e| format!("Plugin lock poisoned: {e}"))?
+                .deactivate();
             process::exit(0);
         }
 
         ControlMessage::SetParameter { id, value } => {
             plugin
+                .lock()
+                .map_err(|e| format!("Plugin lock poisoned: {e}"))?
                 .set_parameter(*id, *value)
                 .map_err(|e| format!("Failed to set parameter: {e}"))?;
             Ok(None) // No response needed for set parameter
@@ -180,6 +230,8 @@ fn handle_control_message(
 
         ControlMessage::GetParameter { id } => {
             let value = plugin
+                .lock()
+                .map_err(|e| format!("Plugin lock poisoned: {e}"))?
                 .get_parameter(*id)
                 .map_err(|e| format!("Failed to get parameter: {e}"))?;
             Ok(Some(ResponseMessage::ParameterValue { id: *id, value }))
@@ -187,22 +239,74 @@ fn handle_control_message(
     }
 }
 
-/// Audio processing loop (will be called from main loop when implemented)
-#[allow(dead_code)]
-fn audio_processing_loop(_plugin: &mut vvdaw_vst3::Vst3Plugin, shared_buffer: &SharedAudioBuffer) {
+/// Audio processing loop running in separate thread
+fn audio_processing_loop(
+    plugin: &Arc<Mutex<vvdaw_vst3::Vst3Plugin>>,
+    shared_buffer_ptr: &SendSharedBuffer,
+) {
+    use std::sync::atomic::Ordering;
+    use vvdaw_plugin::{AudioBuffer, EventBuffer};
+
+    // Safety: shared_buffer_ptr is valid as long as the main thread keeps _shared_memory alive
+    #[allow(unsafe_code)]
+    let shared_buffer = unsafe { &mut *(shared_buffer_ptr.0.cast_mut()) };
+
     loop {
-        // Wait for Process signal
+        // Wait for Process signal (1 second timeout)
         if !shared_buffer.wait_for_state(ProcessState::Process, 1_000_000) {
-            // 1 second timeout
-            eprintln!("Audio processing timeout");
-            continue;
+            continue; // Timeout, check again
         }
 
-        // TODO: Process audio
-        // 1. Read input buffers from shared memory
-        // 2. Read events from shared memory
-        // 3. Call plugin.process()
-        // 4. Write output buffers to shared memory
+        // Get frame count
+        let frame_count = shared_buffer.frame_count.load(Ordering::Acquire) as usize;
+
+        // Read events from shared memory
+        let event_count = shared_buffer.event_count.load(Ordering::Acquire) as usize;
+        let mut event_buffer = EventBuffer::new();
+        for i in 0..event_count {
+            event_buffer.events.push(shared_buffer.events[i].into());
+        }
+
+        // Prepare audio buffers (read from shared memory)
+        let input_vecs: Vec<Vec<f32>> = (0..2)
+            .map(|ch| shared_buffer.inputs[ch][..frame_count].to_vec())
+            .collect();
+
+        let mut output_vecs: Vec<Vec<f32>> = vec![vec![0.0; frame_count]; 2];
+
+        // Create buffer references
+        let input_refs: Vec<&[f32]> = input_vecs.iter().map(std::vec::Vec::as_slice).collect();
+        let mut output_refs: Vec<&mut [f32]> = output_vecs
+            .iter_mut()
+            .map(std::vec::Vec::as_mut_slice)
+            .collect();
+
+        let mut audio = AudioBuffer {
+            inputs: &input_refs,
+            outputs: &mut output_refs,
+            frames: frame_count,
+        };
+
+        // Process through plugin
+        let result = match plugin.lock() {
+            Ok(mut plugin) => plugin.process(&mut audio, &event_buffer),
+            Err(e) => {
+                eprintln!("Plugin lock poisoned: {e}");
+                shared_buffer.set_state(ProcessState::Crashed);
+                return;
+            }
+        };
+
+        if let Err(e) = result {
+            eprintln!("Plugin processing failed: {e}");
+            shared_buffer.set_state(ProcessState::Crashed);
+            return;
+        }
+
+        // Write outputs back to shared memory
+        for (ch, output) in output_vecs.iter().enumerate() {
+            shared_buffer.outputs[ch][..frame_count].copy_from_slice(output);
+        }
 
         // Signal completion
         shared_buffer.set_state(ProcessState::Done);

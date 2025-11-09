@@ -32,7 +32,9 @@ fn main() {
         let error = ScanResult::Error {
             message: "Usage: plugin-scanner <path-to-plugin.vst3>".to_string(),
         };
-        println!("{}", serde_json::to_string(&error).unwrap());
+        let json = serde_json::to_string(&error)
+            .unwrap_or_else(|_| r#"{"status":"error","message":"Usage error"}"#.to_string());
+        println!("{json}");
         process::exit(1);
     }
 
@@ -42,14 +44,20 @@ fn main() {
     match load_plugin_info(plugin_path) {
         Ok(info) => {
             let result = ScanResult::Success { plugin: info };
-            println!("{}", serde_json::to_string(&result).unwrap());
+            let json = serde_json::to_string(&result).unwrap_or_else(|_| {
+                r#"{"status":"error","message":"Serialization error"}"#.to_string()
+            });
+            println!("{json}");
             process::exit(0);
         }
         Err(e) => {
             let result = ScanResult::Error {
                 message: format!("Failed to load plugin: {e}"),
             };
-            println!("{}", serde_json::to_string(&result).unwrap());
+            let json = serde_json::to_string(&result).unwrap_or_else(|_| {
+                r#"{"status":"error","message":"Plugin load error"}"#.to_string()
+            });
+            println!("{json}");
             process::exit(1);
         }
     }
