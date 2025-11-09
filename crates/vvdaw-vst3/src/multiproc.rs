@@ -113,10 +113,19 @@ impl MultiProcessPlugin {
     pub fn spawn(plugin_path: impl AsRef<std::path::Path>) -> Result<Self, PluginError> {
         let plugin_path = plugin_path.as_ref().to_string_lossy().to_string();
 
-        // Generate unique shared memory name using process ID + instance counter
-        // This prevents collisions when multiple plugins are loaded in the same process
+        // Generate unique shared memory name using PID + counter + timestamp
+        // This prevents collisions even if process restarts and reuses PID
         let instance_id = INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let shm_name = format!("/vvdaw_shm_{}_{}", std::process::id(), instance_id);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let shm_name = format!(
+            "/vvdaw_shm_{}_{}_{:x}",
+            std::process::id(),
+            instance_id,
+            timestamp
+        );
 
         // Create shared memory
         let mut shared_memory =
@@ -385,15 +394,33 @@ impl Plugin for MultiProcessPlugin {
 
             // 5. Wait for processing to complete
             if !buffer.wait_for_state(crate::ProcessState::Done, AUDIO_PROCESSING_TIMEOUT_US) {
-                // Check if subprocess crashed
-                if !self.is_alive() {
+                // Timeout - check if subprocess crashed instead of timing out
+                let current_state = crate::ProcessState::from_u32(
+                    buffer.state.load(std::sync::atomic::Ordering::Acquire),
+                );
+                if current_state == crate::ProcessState::Crashed {
                     return Err(PluginError::ProcessingFailed(
                         "Subprocess crashed during processing".to_string(),
+                    ));
+                }
+                if !self.is_alive() {
+                    return Err(PluginError::ProcessingFailed(
+                        "Subprocess died during processing".to_string(),
                     ));
                 }
                 return Err(PluginError::ProcessingFailed(
                     "Audio processing timeout".to_string(),
                 ));
+            }
+
+            // Verify we actually got Done state (not Crashed or other state)
+            let final_state = crate::ProcessState::from_u32(
+                buffer.state.load(std::sync::atomic::Ordering::Acquire),
+            );
+            if final_state != crate::ProcessState::Done {
+                return Err(PluginError::ProcessingFailed(format!(
+                    "Unexpected state after processing: {final_state:?}"
+                )));
             }
 
             // 6. Copy output buffers from shared memory
@@ -446,24 +473,37 @@ impl Plugin for MultiProcessPlugin {
     }
 
     fn deactivate(&mut self) {
+        if !self.is_alive() {
+            return; // Already dead
+        }
+
+        // Signal audio thread to shutdown via shared memory
+        // Safety: shared_buffer is valid as long as _shared_memory is alive
+        #[allow(unsafe_code)]
+        unsafe {
+            let buffer = &mut *(self.shared_buffer.as_mut_ptr());
+            buffer.set_state(crate::ProcessState::Shutdown);
+        }
+
+        // Best effort shutdown via control message
+        let _ = self.send_message(&ControlMessage::Shutdown);
+
+        // Wait for subprocess to exit gracefully with timeout
+        // This prevents use-after-free by ensuring subprocess stops using shared memory
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_millis(500);
+
+        while self.is_alive() && start.elapsed() < timeout {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Force kill if still alive after timeout
         if self.is_alive() {
-            // Signal audio thread to shutdown via shared memory
-            // Safety: shared_buffer is valid as long as _shared_memory is alive
-            #[allow(unsafe_code)]
-            unsafe {
-                let buffer = &mut *(self.shared_buffer.as_mut_ptr());
-                buffer.set_state(crate::ProcessState::Shutdown);
-            }
-
-            // Best effort shutdown via control message
-            let _ = self.send_message(&ControlMessage::Shutdown);
-
-            // Wait a bit for graceful shutdown
-            std::thread::sleep(Duration::from_millis(100));
-
-            // Force kill if still alive
-            if self.is_alive() {
-                let _ = self.child_process.kill();
+            let _ = self.child_process.kill();
+            // Wait for kill to complete (non-blocking check loop)
+            let kill_start = std::time::Instant::now();
+            while self.is_alive() && kill_start.elapsed() < Duration::from_millis(100) {
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
     }

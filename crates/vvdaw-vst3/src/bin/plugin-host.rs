@@ -240,6 +240,18 @@ fn handle_control_message(
 }
 
 /// Audio processing loop running in separate thread
+///
+/// # Stack Size Requirements
+///
+/// This function allocates approximately 64KB of buffers on the stack:
+/// - Input buffers: 2 channels × 8192 frames × 4 bytes = 64KB
+/// - Output buffers: 2 channels × 8192 frames × 4 bytes = 64KB
+///
+/// **Total stack usage: ~128KB minimum**
+///
+/// Default thread stack size on most platforms (2MB) is sufficient.
+/// If spawning this thread manually with `std::thread::Builder`, ensure
+/// stack size is at least 256KB to account for other function frames.
 fn audio_processing_loop(
     plugin: &Arc<Mutex<vvdaw_vst3::Vst3Plugin>>,
     shared_buffer_ptr: &SendSharedBuffer,
@@ -249,6 +261,7 @@ fn audio_processing_loop(
 
     const MAX_CHANNELS: usize = 2;
     const MAX_FRAMES: usize = 8192;
+    const MAX_EVENTS: usize = 1024; // Must match vvdaw_vst3::ipc::MAX_EVENTS
 
     // Safety: shared_buffer_ptr is valid as long as the main thread keeps _shared_memory alive
     #[allow(unsafe_code)]
@@ -272,11 +285,22 @@ fn audio_processing_loop(
             continue; // Timeout, check again
         }
 
-        // Get frame count
+        // Get frame count and validate bounds (prevent malicious/buggy subprocess data)
         let frame_count = shared_buffer.frame_count.load(Ordering::Acquire) as usize;
+        if frame_count > MAX_FRAMES {
+            eprintln!("Invalid frame_count from shared memory: {frame_count} > {MAX_FRAMES}");
+            shared_buffer.set_state(ProcessState::Crashed);
+            return;
+        }
 
-        // Read events from shared memory
+        // Read events from shared memory and validate bounds
         let event_count = shared_buffer.event_count.load(Ordering::Acquire) as usize;
+        if event_count > MAX_EVENTS {
+            eprintln!("Invalid event_count from shared memory: {event_count} > {MAX_EVENTS}");
+            shared_buffer.set_state(ProcessState::Crashed);
+            return;
+        }
+
         let mut event_buffer = EventBuffer::new();
         for i in 0..event_count {
             event_buffer.events.push(shared_buffer.events[i].into());
