@@ -23,11 +23,13 @@ use vvdaw_plugin::{PluginError, PluginInfo};
 mod com;
 mod ipc;
 mod loader;
+mod multiproc;
 mod shm;
 mod wrapper;
 
 pub use ipc::{ControlMessage, Event, ProcessState, ResponseMessage, SharedAudioBuffer};
 pub use loader::Vst3Loader;
+pub use multiproc::MultiProcessPlugin;
 pub use shm::SharedMemory;
 pub use wrapper::Vst3Plugin;
 

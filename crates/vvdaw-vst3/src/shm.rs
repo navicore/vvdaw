@@ -103,7 +103,7 @@ impl SharedMemory {
             )
         };
 
-        if ptr == libc::MAP_FAILED {
+        if ptr == libc::MAP_FAILED || ptr.is_null() {
             unsafe { libc::close(fd) };
             return Err(PluginError::FormatError(format!(
                 "Failed to map shared memory: {}",
@@ -113,7 +113,9 @@ impl SharedMemory {
 
         Ok(Self {
             fd,
-            ptr: NonNull::new(ptr.cast::<u8>()).unwrap(),
+            ptr: NonNull::new(ptr.cast::<u8>()).ok_or_else(|| {
+                PluginError::FormatError("Unexpected null pointer after mmap".to_string())
+            })?,
             size,
             name: name.to_string(),
             is_creator: true,
@@ -167,7 +169,7 @@ impl SharedMemory {
             )
         };
 
-        if ptr == libc::MAP_FAILED {
+        if ptr == libc::MAP_FAILED || ptr.is_null() {
             unsafe { libc::close(fd) };
             return Err(PluginError::FormatError(format!(
                 "Failed to map shared memory: {}",
@@ -177,7 +179,9 @@ impl SharedMemory {
 
         Ok(Self {
             fd,
-            ptr: NonNull::new(ptr.cast::<u8>()).unwrap(),
+            ptr: NonNull::new(ptr.cast::<u8>()).ok_or_else(|| {
+                PluginError::FormatError("Unexpected null pointer after mmap".to_string())
+            })?,
             size,
             name: name.to_string(),
             is_creator: false,
