@@ -233,11 +233,20 @@ impl MultiProcessPlugin {
         Ok(())
     }
 
-    /// Wait for a response message from the subprocess with timeout
+    /// Wait for a response message from the subprocess
     ///
-    /// Uses platform-specific mechanisms to implement read timeouts:
-    /// - Unix: setsockopt SO_RCVTIMEO on the file descriptor
-    /// - Other platforms: Falls back to process monitoring
+    /// **Note on timeouts**: This performs a blocking read on a pipe.
+    /// True timeout support would require:
+    /// - Dedicated reader thread with channel timeout
+    /// - Platform-specific non-blocking I/O (poll/select on Unix)
+    /// - Async I/O with timeout combinators
+    ///
+    /// Currently, we rely on:
+    /// 1. Process liveness checks before/after read
+    /// 2. Subprocess implementing reasonable timeouts
+    /// 3. Watchdog in caller to detect hung operations
+    ///
+    /// If subprocess hangs without dying, this will block indefinitely.
     fn wait_for_response(&mut self) -> Result<ResponseMessage, PluginError> {
         // Check if subprocess is alive before attempting to read
         if !self.is_alive() {
@@ -246,43 +255,18 @@ impl MultiProcessPlugin {
             ));
         }
 
-        // Set read timeout on Unix platforms
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-
-            let fd = self.stdout.get_ref().as_raw_fd();
-            let timeout = libc::timeval {
-                tv_sec: (SUBPROCESS_TIMEOUT_MS / 1000) as libc::time_t,
-                tv_usec: ((SUBPROCESS_TIMEOUT_MS % 1000) * 1000) as libc::suseconds_t,
-            };
-
-            #[allow(unsafe_code)]
-            unsafe {
-                libc::setsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_RCVTIMEO,
-                    std::ptr::from_ref(&timeout).cast(),
-                    std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-                );
-            }
-        }
-
         let mut line = String::new();
 
         self.stdout.read_line(&mut line).map_err(|e| {
-            // Check if timeout occurred
-            if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut
-            {
-                PluginError::ProcessingFailed(format!(
-                    "Subprocess response timeout after {SUBPROCESS_TIMEOUT_MS}ms"
-                ))
-            } else {
-                PluginError::ProcessingFailed(format!("Failed to read from stdout: {e}"))
-            }
+            PluginError::ProcessingFailed(format!("Failed to read from stdout: {e}"))
         })?;
+
+        // Verify subprocess is still alive after read
+        if !self.is_alive() {
+            return Err(PluginError::ProcessingFailed(
+                "Subprocess died during communication".to_string(),
+            ));
+        }
 
         if line.is_empty() {
             return Err(PluginError::ProcessingFailed(

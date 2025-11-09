@@ -274,6 +274,10 @@ fn audio_processing_loop(
     #[allow(clippy::large_stack_arrays)]
     let mut output_buffers: [[f32; MAX_FRAMES]; MAX_CHANNELS] = [[0.0; MAX_FRAMES]; MAX_CHANNELS];
 
+    // Pre-allocate event buffer with capacity to avoid allocations in loop
+    let mut event_buffer = EventBuffer::new();
+    event_buffer.events.reserve(MAX_EVENTS);
+
     loop {
         // Wait for Process signal (1 second timeout)
         if !shared_buffer.wait_for_state(ProcessState::Process, 1_000_000) {
@@ -301,7 +305,8 @@ fn audio_processing_loop(
             return;
         }
 
-        let mut event_buffer = EventBuffer::new();
+        // Reuse pre-allocated event buffer (clear from previous cycle)
+        event_buffer.events.clear();
         for i in 0..event_count {
             event_buffer.events.push(shared_buffer.events[i].into());
         }
