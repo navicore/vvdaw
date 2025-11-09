@@ -247,13 +247,28 @@ fn audio_processing_loop(
     use std::sync::atomic::Ordering;
     use vvdaw_plugin::{AudioBuffer, EventBuffer};
 
+    const MAX_CHANNELS: usize = 2;
+    const MAX_FRAMES: usize = 8192;
+
     // Safety: shared_buffer_ptr is valid as long as the main thread keeps _shared_memory alive
     #[allow(unsafe_code)]
     let shared_buffer = unsafe { &mut *(shared_buffer_ptr.0.cast_mut()) };
 
+    // Pre-allocate buffers to avoid allocations in audio callback (real-time safety)
+    // We intentionally use stack allocation here for performance (avoid heap fragmentation)
+    #[allow(clippy::large_stack_arrays)]
+    let mut input_buffers: [[f32; MAX_FRAMES]; MAX_CHANNELS] = [[0.0; MAX_FRAMES]; MAX_CHANNELS];
+    #[allow(clippy::large_stack_arrays)]
+    let mut output_buffers: [[f32; MAX_FRAMES]; MAX_CHANNELS] = [[0.0; MAX_FRAMES]; MAX_CHANNELS];
+
     loop {
         // Wait for Process signal (1 second timeout)
         if !shared_buffer.wait_for_state(ProcessState::Process, 1_000_000) {
+            // Check if shutdown was requested during timeout
+            let current_state = ProcessState::from_u32(shared_buffer.state.load(Ordering::Acquire));
+            if current_state == ProcessState::Shutdown {
+                return; // Exit audio thread gracefully
+            }
             continue; // Timeout, check again
         }
 
@@ -267,18 +282,19 @@ fn audio_processing_loop(
             event_buffer.events.push(shared_buffer.events[i].into());
         }
 
-        // Prepare audio buffers (read from shared memory)
-        let input_vecs: Vec<Vec<f32>> = (0..2)
-            .map(|ch| shared_buffer.inputs[ch][..frame_count].to_vec())
+        // Copy input data from shared memory to pre-allocated buffers
+        for (ch, buf) in input_buffers.iter_mut().enumerate() {
+            buf[..frame_count].copy_from_slice(&shared_buffer.inputs[ch][..frame_count]);
+        }
+
+        // Create slices from pre-allocated buffers (no allocation)
+        let input_refs: Vec<&[f32]> = input_buffers
+            .iter()
+            .map(|buf| &buf[..frame_count])
             .collect();
-
-        let mut output_vecs: Vec<Vec<f32>> = vec![vec![0.0; frame_count]; 2];
-
-        // Create buffer references
-        let input_refs: Vec<&[f32]> = input_vecs.iter().map(std::vec::Vec::as_slice).collect();
-        let mut output_refs: Vec<&mut [f32]> = output_vecs
+        let mut output_refs: Vec<&mut [f32]> = output_buffers
             .iter_mut()
-            .map(std::vec::Vec::as_mut_slice)
+            .map(|buf| &mut buf[..frame_count])
             .collect();
 
         let mut audio = AudioBuffer {
@@ -304,8 +320,8 @@ fn audio_processing_loop(
         }
 
         // Write outputs back to shared memory
-        for (ch, output) in output_vecs.iter().enumerate() {
-            shared_buffer.outputs[ch][..frame_count].copy_from_slice(output);
+        for (ch, buf) in output_buffers.iter().enumerate() {
+            shared_buffer.outputs[ch][..frame_count].copy_from_slice(&buf[..frame_count]);
         }
 
         // Signal completion

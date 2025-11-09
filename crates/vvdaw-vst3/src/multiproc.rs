@@ -23,6 +23,7 @@
 use crate::{ControlMessage, ResponseMessage, SharedAudioBuffer, SharedMemory};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use vvdaw_core::{ChannelCount, Frames, SampleRate};
 use vvdaw_plugin::{AudioBuffer, EventBuffer, ParameterInfo, Plugin, PluginError, PluginInfo};
@@ -34,6 +35,12 @@ const SUBPROCESS_TIMEOUT_MS: u64 = 5000;
 /// Maximum time to wait for audio processing (in microseconds)
 #[allow(dead_code)] // Will be used for audio processing implementation
 const AUDIO_PROCESSING_TIMEOUT_US: u64 = 10_000; // 10ms
+
+/// Global instance counter for generating unique shared memory names
+///
+/// This ensures that multiple plugin instances in the same process
+/// get unique shared memory regions instead of colliding.
+static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Send-safe wrapper for shared audio buffer pointer
 ///
@@ -106,8 +113,10 @@ impl MultiProcessPlugin {
     pub fn spawn(plugin_path: impl AsRef<std::path::Path>) -> Result<Self, PluginError> {
         let plugin_path = plugin_path.as_ref().to_string_lossy().to_string();
 
-        // Generate unique shared memory name
-        let shm_name = format!("/vvdaw_shm_{}", std::process::id());
+        // Generate unique shared memory name using process ID + instance counter
+        // This prevents collisions when multiple plugins are loaded in the same process
+        let instance_id = INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let shm_name = format!("/vvdaw_shm_{}_{}", std::process::id(), instance_id);
 
         // Create shared memory
         let mut shared_memory =
@@ -215,13 +224,55 @@ impl MultiProcessPlugin {
         Ok(())
     }
 
-    /// Wait for a response message from the subprocess
+    /// Wait for a response message from the subprocess with timeout
+    ///
+    /// Uses platform-specific mechanisms to implement read timeouts:
+    /// - Unix: setsockopt SO_RCVTIMEO on the file descriptor
+    /// - Other platforms: Falls back to process monitoring
     fn wait_for_response(&mut self) -> Result<ResponseMessage, PluginError> {
+        // Check if subprocess is alive before attempting to read
+        if !self.is_alive() {
+            return Err(PluginError::ProcessingFailed(
+                "Subprocess has died".to_string(),
+            ));
+        }
+
+        // Set read timeout on Unix platforms
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+
+            let fd = self.stdout.get_ref().as_raw_fd();
+            let timeout = libc::timeval {
+                tv_sec: (SUBPROCESS_TIMEOUT_MS / 1000) as libc::time_t,
+                tv_usec: ((SUBPROCESS_TIMEOUT_MS % 1000) * 1000) as libc::suseconds_t,
+            };
+
+            #[allow(unsafe_code)]
+            unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVTIMEO,
+                    std::ptr::from_ref(&timeout).cast(),
+                    std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+                );
+            }
+        }
+
         let mut line = String::new();
 
-        // TODO: Add timeout
         self.stdout.read_line(&mut line).map_err(|e| {
-            PluginError::ProcessingFailed(format!("Failed to read from stdout: {e}"))
+            // Check if timeout occurred
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut
+            {
+                PluginError::ProcessingFailed(format!(
+                    "Subprocess response timeout after {SUBPROCESS_TIMEOUT_MS}ms"
+                ))
+            } else {
+                PluginError::ProcessingFailed(format!("Failed to read from stdout: {e}"))
+            }
         })?;
 
         if line.is_empty() {
@@ -396,7 +447,15 @@ impl Plugin for MultiProcessPlugin {
 
     fn deactivate(&mut self) {
         if self.is_alive() {
-            // Best effort shutdown
+            // Signal audio thread to shutdown via shared memory
+            // Safety: shared_buffer is valid as long as _shared_memory is alive
+            #[allow(unsafe_code)]
+            unsafe {
+                let buffer = &mut *(self.shared_buffer.as_mut_ptr());
+                buffer.set_state(crate::ProcessState::Shutdown);
+            }
+
+            // Best effort shutdown via control message
             let _ = self.send_message(&ControlMessage::Shutdown);
 
             // Wait a bit for graceful shutdown

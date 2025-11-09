@@ -132,6 +132,9 @@ pub enum ProcessState {
 
     /// Plugin subprocess has crashed
     Crashed = 3,
+
+    /// Main process requests audio thread to shutdown gracefully
+    Shutdown = 4,
 }
 
 impl ProcessState {
@@ -142,6 +145,7 @@ impl ProcessState {
             1 => Self::Process,
             2 => Self::Done,
             3 => Self::Crashed,
+            4 => Self::Shutdown,
             _ => Self::Idle, // Default to Idle for unknown values
         }
     }
