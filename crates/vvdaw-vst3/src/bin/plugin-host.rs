@@ -311,15 +311,16 @@ fn audio_processing_loop(
             buf[..frame_count].copy_from_slice(&shared_buffer.inputs[ch][..frame_count]);
         }
 
-        // Create slices from pre-allocated buffers (no allocation)
-        let input_refs: Vec<&[f32]> = input_buffers
-            .iter()
-            .map(|buf| &buf[..frame_count])
-            .collect();
-        let mut output_refs: Vec<&mut [f32]> = output_buffers
-            .iter_mut()
-            .map(|buf| &mut buf[..frame_count])
-            .collect();
+        // Create slices from pre-allocated buffers using fixed-size arrays (no allocation)
+        let input_refs: [&[f32]; MAX_CHANNELS] = [
+            &input_buffers[0][..frame_count],
+            &input_buffers[1][..frame_count],
+        ];
+
+        // Split output_buffers to get non-overlapping mutable slices
+        let (out0, out1) = output_buffers.split_at_mut(1);
+        let mut output_refs: [&mut [f32]; MAX_CHANNELS] =
+            [&mut out0[0][..frame_count], &mut out1[0][..frame_count]];
 
         let mut audio = AudioBuffer {
             inputs: &input_refs,
@@ -327,13 +328,22 @@ fn audio_processing_loop(
             frames: frame_count,
         };
 
-        // Process through plugin
-        let result = match plugin.lock() {
+        // Process through plugin (use try_lock to avoid blocking in audio thread)
+        let result = match plugin.try_lock() {
             Ok(mut plugin) => plugin.process(&mut audio, &event_buffer),
-            Err(e) => {
+            Err(std::sync::TryLockError::Poisoned(e)) => {
                 eprintln!("Plugin lock poisoned: {e}");
                 shared_buffer.set_state(ProcessState::Crashed);
                 return;
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                // Lock is held by control thread - this is an underrun
+                // Output silence and continue (real-time constraint: never block)
+                eprintln!("Audio thread: mutex contention, outputting silence");
+                for buf in &mut output_buffers {
+                    buf[..frame_count].fill(0.0);
+                }
+                Ok(())
             }
         };
 

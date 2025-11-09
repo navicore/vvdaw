@@ -452,15 +452,26 @@ impl Plugin for MultiProcessPlugin {
     }
 
     fn get_parameter(&self, id: u32) -> Result<f32, PluginError> {
-        // This is tricky - we need mutable access to send/receive
-        // For now, return an error
+        // Not implemented due to trait signature limitations
+        //
+        // The Plugin trait's get_parameter() requires &self, but sending a message
+        // to the subprocess and waiting for a response requires &mut self (for stdout).
+        //
+        // Solutions:
+        // 1. Cache parameter values in main process (update on set_parameter)
+        // 2. Change Plugin trait to require &mut self for get_parameter
+        // 3. Use interior mutability (Mutex<BufReader>) for stdout
+        //
+        // For now, users should track parameter state themselves or use set_parameter
+        // as the source of truth (which is common in audio plugins).
         Err(PluginError::InvalidParameter(format!(
-            "get_parameter not yet implemented for multi-process plugins: {id}"
+            "get_parameter not implemented for multi-process plugins (trait signature limitation): {id}"
         )))
     }
 
     fn parameters(&self) -> Vec<ParameterInfo> {
-        // TODO: Get parameters from subprocess
+        // Not implemented - would require querying subprocess at construction time
+        // This could be cached from the Ready message in the future
         Vec::new()
     }
 
