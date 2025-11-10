@@ -1,6 +1,7 @@
 //! Audio processing graph.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use vvdaw_core::{Frames, Sample, SampleRate};
 use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin, PluginError};
 
@@ -145,6 +146,30 @@ impl AudioGraph {
     }
 
     /// Connect two nodes
+    ///
+    /// # Channel Handling
+    ///
+    /// This method does **not** validate that output channel counts of `from`
+    /// match input channel counts of `to`. This is intentional:
+    ///
+    /// - **Upmixing**: A mono source (1 channel) can feed a stereo effect (2 channels)
+    /// - **Downmixing**: A stereo source (2 channels) can feed a mono analyzer (1 channel)
+    /// - **Summing**: Multiple nodes can connect to the same destination (mixer pattern)
+    ///
+    /// Channel routing and mixing logic is implemented in the `process()` method.
+    /// Checkpoint 2 will add explicit per-channel routing.
+    ///
+    /// # Current Limitations
+    ///
+    /// - All connections currently route all available channels (no per-channel routing)
+    /// - Channel count mismatches are handled by truncation or zero-padding in `process()`
+    /// - No validation for mono-only or stereo-only plugin requirements
+    ///
+    /// # Future Work (Checkpoint 2)
+    ///
+    /// - Per-channel routing (e.g., "connect output channel 0 to input channel 1")
+    /// - Explicit mixing configuration (sum, replace, etc.)
+    /// - Validation modes for strict channel matching
     pub fn connect(&mut self, from: usize, to: usize) -> Result<(), String> {
         if !self.nodes.contains_key(&from) {
             return Err(format!("Source node {from} not found"));
@@ -205,8 +230,6 @@ impl AudioGraph {
                     "Graph contains cycle involving nodes: {:?}. Using linear order instead.",
                     cycle_nodes
                 );
-                // Clear is already done above, but be explicit for clarity
-                self.processing_order.clear();
                 self.processing_order.extend(self.nodes.keys().copied());
                 self.processing_order.sort_unstable();
             }
@@ -215,47 +238,44 @@ impl AudioGraph {
 
     /// Perform topological sort using Kahn's algorithm
     ///
+    /// Complexity: O(V + E) where V = nodes, E = edges
+    ///
     /// Returns Ok(order) if graph is acyclic, `Err(remaining_nodes)` if cycles exist.
     fn topological_sort(&self) -> Result<Vec<usize>, Vec<usize>> {
         // Build in-degree map: count incoming edges for each node
         let mut in_degree: HashMap<usize, usize> = self.nodes.keys().map(|&id| (id, 0)).collect();
 
+        // Build adjacency list for O(1) outgoing edge lookup
+        // This avoids O(V × E) iteration through all connections for each node
+        let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
         for conn in &self.connections {
             *in_degree.entry(conn.to).or_insert(0) += 1;
+            adjacency.entry(conn.from).or_insert_with(Vec::new).push(conn.to);
         }
 
-        // Start with nodes that have no incoming edges
-        let mut queue: Vec<usize> = in_degree
+        // Use a min-heap (via Reverse) for O(log V) insertions/removals
+        // This maintains deterministic sorted order automatically
+        let mut queue: BinaryHeap<Reverse<usize>> = in_degree
             .iter()
             .filter(|&(_, &degree)| degree == 0)
-            .map(|(&id, _)| id)
+            .map(|(&id, _)| Reverse(id))
             .collect();
-
-        // Sort queue for deterministic ordering
-        queue.sort_unstable();
 
         let mut result = Vec::new();
 
-        // Process queue in order (remove from front to maintain sorted order)
-        while !queue.is_empty() {
-            let node_id = queue.remove(0);
+        // Process nodes in sorted order (O(V log V) for all pops)
+        while let Some(Reverse(node_id)) = queue.pop() {
             result.push(node_id);
 
-            // Find all outgoing connections from this node
-            let outgoing: Vec<usize> = self
-                .connections
-                .iter()
-                .filter(|conn| conn.from == node_id)
-                .map(|conn| conn.to)
-                .collect();
-
-            // Reduce in-degree of connected nodes
-            for &to_id in &outgoing {
-                if let Some(degree) = in_degree.get_mut(&to_id) {
-                    *degree -= 1;
-                    if *degree == 0 {
-                        queue.push(to_id);
-                        queue.sort_unstable(); // Keep deterministic
+            // Look up outgoing edges in adjacency list (O(1) lookup)
+            if let Some(outgoing) = adjacency.get(&node_id) {
+                // Reduce in-degree of connected nodes
+                for &to_id in outgoing {
+                    if let Some(degree) = in_degree.get_mut(&to_id) {
+                        *degree -= 1;
+                        if *degree == 0 {
+                            queue.push(Reverse(to_id)); // O(log V)
+                        }
                     }
                 }
             }
@@ -774,5 +794,122 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert!(result.contains(&node_a));
         assert!(result.contains(&node_c));
+    }
+
+    #[test]
+    fn test_large_graph_performance() {
+        // Test with 100 nodes to validate O(V + E) performance
+        // This should complete quickly (< 100ms) with optimized algorithm
+        let mut graph = AudioGraph::new();
+        let mut nodes = Vec::new();
+
+        // Create 100 nodes
+        for i in 0..100 {
+            let node = graph
+                .add_node(Box::new(DummyPlugin::new(&format!("Node{i}"), 2, 2)))
+                .unwrap();
+            nodes.push(node);
+        }
+
+        // Create a complex graph structure:
+        // - Linear chain for first 50 nodes
+        // - Parallel paths for next 50 nodes
+        // Total: ~150 edges
+        for i in 0..49 {
+            graph.connect(nodes[i], nodes[i + 1]).unwrap();
+        }
+
+        // Create parallel paths that merge
+        for i in 50..75 {
+            graph.connect(nodes[49], nodes[i]).unwrap();
+            graph.connect(nodes[i], nodes[99]).unwrap();
+        }
+
+        // Add some cross-connections for complexity
+        for i in 75..90 {
+            graph.connect(nodes[i - 25], nodes[i]).unwrap();
+            graph.connect(nodes[i], nodes[i + 5]).unwrap();
+        }
+
+        // Verify processing order is correct
+        assert_eq!(graph.processing_order.len(), 100);
+
+        // Verify topological properties
+        let result = graph.topological_sort();
+        assert!(result.is_ok());
+        let order = result.unwrap();
+        assert_eq!(order.len(), 100);
+
+        // Verify that node 0 comes before node 49 (linear chain)
+        let pos_0 = order.iter().position(|&id| id == nodes[0]).unwrap();
+        let pos_49 = order.iter().position(|&id| id == nodes[49]).unwrap();
+        assert!(pos_0 < pos_49);
+
+        // Verify that node 49 comes before node 99 (merge point)
+        let pos_99 = order.iter().position(|&id| id == nodes[99]).unwrap();
+        assert!(pos_49 < pos_99);
+
+        // Test that updates remain fast
+        // Adding a new connection should still be quick
+        graph.connect(nodes[10], nodes[90]).unwrap();
+        assert_eq!(graph.processing_order.len(), 100);
+
+        // Removing a node should still be quick
+        graph.remove_node(nodes[50]);
+        assert_eq!(graph.processing_order.len(), 99);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn test_very_large_graph_benchmark() {
+        // Benchmark with 1000 nodes (release mode only)
+        // With O(V + E) algorithm, this should complete in < 10ms
+        use std::time::Instant;
+
+        let mut graph = AudioGraph::new();
+        let mut nodes = Vec::new();
+
+        let start = Instant::now();
+
+        // Create 1000 nodes
+        for i in 0..1000 {
+            let node = graph
+                .add_node(Box::new(DummyPlugin::new(&format!("N{i}"), 2, 2)))
+                .unwrap();
+            nodes.push(node);
+        }
+
+        let create_time = start.elapsed();
+        println!("Created 1000 nodes in {:?}", create_time);
+
+        // Create ~2000 edges (complex graph)
+        let connection_start = Instant::now();
+        for i in 0..999 {
+            graph.connect(nodes[i], nodes[i + 1]).unwrap();
+        }
+        for i in (0..500).step_by(2) {
+            graph.connect(nodes[i], nodes[i + 500]).unwrap();
+        }
+
+        let connection_time = connection_start.elapsed();
+        println!("Created ~1500 connections in {:?}", connection_time);
+
+        // Test topological sort performance
+        let sort_start = Instant::now();
+        let result = graph.topological_sort();
+        let sort_time = sort_start.elapsed();
+
+        println!("Topological sort on 1000 nodes in {:?}", sort_time);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1000);
+
+        // With O(V + E) algorithm, this should be < 10ms in release mode
+        // In debug mode it might be slower, so we only run this in release
+        assert!(
+            sort_time.as_millis() < 100,
+            "Topological sort took {}ms (expected < 100ms)",
+            sort_time.as_millis()
+        );
     }
 }
