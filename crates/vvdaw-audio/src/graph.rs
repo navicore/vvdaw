@@ -250,10 +250,7 @@ impl AudioGraph {
         let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
         for conn in &self.connections {
             *in_degree.entry(conn.to).or_insert(0) += 1;
-            adjacency
-                .entry(conn.from)
-                .or_insert_with(Vec::new)
-                .push(conn.to);
+            adjacency.entry(conn.from).or_default().push(conn.to);
         }
 
         // Use a min-heap (via Reverse) for O(log V) insertions/removals
