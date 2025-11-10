@@ -243,11 +243,16 @@ impl AudioGraph {
     /// Returns Ok(order) if graph is acyclic, `Err(remaining_nodes)` if cycles exist.
     fn topological_sort(&self) -> Result<Vec<usize>, Vec<usize>> {
         // Build in-degree map: count incoming edges for each node
-        let mut in_degree: HashMap<usize, usize> = self.nodes.keys().map(|&id| (id, 0)).collect();
+        // Pre-allocate for predictable size to avoid rehashing
+        let mut in_degree: HashMap<usize, usize> = HashMap::with_capacity(self.nodes.len());
+        for &id in self.nodes.keys() {
+            in_degree.insert(id, 0);
+        }
 
         // Build adjacency list for O(1) outgoing edge lookup
         // This avoids O(V × E) iteration through all connections for each node
-        let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
+        // Pre-allocate based on number of source nodes (upper bound)
+        let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::with_capacity(self.nodes.len());
         for conn in &self.connections {
             *in_degree.entry(conn.to).or_insert(0) += 1;
             adjacency.entry(conn.from).or_default().push(conn.to);
@@ -286,10 +291,12 @@ impl AudioGraph {
             Ok(result)
         } else {
             // Cycle detected - return nodes that couldn't be processed
+            // Use HashSet for O(V) instead of O(V²) from Vec::contains
+            let processed: HashSet<usize> = result.into_iter().collect();
             let remaining: Vec<usize> = self
                 .nodes
                 .keys()
-                .filter(|id| !result.contains(id))
+                .filter(|id| !processed.contains(id))
                 .copied()
                 .collect();
             Err(remaining)
