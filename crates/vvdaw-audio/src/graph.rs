@@ -55,6 +55,10 @@ pub struct AudioGraph {
     // Map from node_id to its output buffer
     node_buffers: HashMap<usize, Vec<Vec<Sample>>>,
 
+    // Input buffers for mixing connected node outputs
+    // Map from node_id to its input buffer (cleared and mixed before each process)
+    input_buffers: HashMap<usize, Vec<Vec<Sample>>>,
+
     // Pre-computed processing order (sorted node IDs)
     // Updated when nodes are added/removed to avoid allocating in process()
     processing_order: Vec<usize>,
@@ -75,6 +79,7 @@ impl AudioGraph {
             sample_rate,
             block_size,
             node_buffers: HashMap::new(),
+            input_buffers: HashMap::new(),
             processing_order: Vec::new(),
         }
     }
@@ -116,8 +121,8 @@ impl AudioGraph {
             },
         );
 
-        // Allocate buffer for this node's output
-        self.allocate_node_buffer(id, outputs);
+        // Allocate buffers for this node's input and output
+        self.allocate_node_buffer(id, inputs, outputs);
 
         // Update processing order (allocates, but not in audio callback)
         self.update_processing_order();
@@ -135,8 +140,9 @@ impl AudioGraph {
         // Remove the node
         let node = self.nodes.remove(&id)?;
 
-        // Remove its buffer
+        // Remove its buffers
         self.node_buffers.remove(&id);
+        self.input_buffers.remove(&id);
 
         // Update processing order (allocates, but not in audio callback)
         self.update_processing_order();
@@ -198,10 +204,17 @@ impl AudioGraph {
         }
     }
 
-    /// Allocate buffer for a node's output
-    fn allocate_node_buffer(&mut self, node_id: usize, channel_count: usize) {
-        let buffer = vec![vec![0.0; self.block_size]; channel_count];
-        self.node_buffers.insert(node_id, buffer);
+    /// Allocate input and output buffers for a node
+    fn allocate_node_buffer(
+        &mut self,
+        node_id: usize,
+        input_channels: usize,
+        output_channels: usize,
+    ) {
+        let input_buffer = vec![vec![0.0; self.block_size]; input_channels];
+        let output_buffer = vec![vec![0.0; self.block_size]; output_channels];
+        self.input_buffers.insert(node_id, input_buffer);
+        self.node_buffers.insert(node_id, output_buffer);
     }
 
     /// Update the processing order after graph structure changes
@@ -306,65 +319,123 @@ impl AudioGraph {
     /// Allocate all buffers based on current nodes
     fn allocate_buffers(&mut self) {
         self.node_buffers.clear();
+        self.input_buffers.clear();
         for (&id, node) in &self.nodes {
-            let buffer = vec![vec![0.0; self.block_size]; node.outputs];
-            self.node_buffers.insert(id, buffer);
+            let input_buffer = vec![vec![0.0; self.block_size]; node.inputs];
+            let output_buffer = vec![vec![0.0; self.block_size]; node.outputs];
+            self.input_buffers.insert(id, input_buffer);
+            self.node_buffers.insert(id, output_buffer);
         }
     }
 
-    /// Process all nodes in the graph
+    /// Process all nodes in the graph with connection-based routing
+    ///
+    /// Audio flow:
+    /// 1. Input nodes (no incoming connections) receive `system_input`
+    /// 2. Connected nodes receive mixed outputs from their source nodes
+    /// 3. Output nodes (no outgoing connections) are mixed to `system_output`
+    ///
+    /// Mixing strategy: Additive (sum all sources)
     pub fn process(&mut self, system_input: &[&[Sample]], system_output: &mut [&mut [Sample]]) {
         if self.nodes.is_empty() {
-            // No nodes - pass through silence
+            // No nodes - output silence
             for channel in system_output.iter_mut() {
                 channel.fill(0.0);
             }
             return;
         }
 
-        // For now, deterministic linear processing (sorted by node ID)
-        // TODO: Implement proper topological sort for complex graphs
-        let event_buffer = EventBuffer::new();
-
-        // Use pre-computed processing order (no allocation!)
-        // REAL-TIME SAFE: processing_order is updated when nodes are added/removed,
-        // not during audio processing
-        for &node_id in &self.processing_order {
-            // SAFETY: We know the node exists because we just got the ID from keys()
-            if let Some(node) = self.nodes.get_mut(&node_id) {
-                // Prepare input buffer (for now, use system input)
-                // TODO: Mix inputs from connected nodes
-                if let Some(node_buffer) = self.node_buffers.get_mut(&node_id) {
-                    // Create mutable references for AudioBuffer
-                    // NOTE: This Vec allocation is small (8-16 bytes for typical channel counts)
-                    // and unavoidable without unsafe code due to Rust's drop checker.
-                    // SmallVec would avoid heap allocation but triggers lifetime issues:
-                    // the compiler can't prove SmallVec's Drop doesn't use the borrowed slices.
-                    // Vec has special treatment in the borrow checker that SmallVec lacks.
-                    // Pre-allocating with capacity helps modern allocators reuse memory.
-                    let mut output_refs: Vec<&mut [Sample]> = Vec::with_capacity(node.outputs());
-                    output_refs.extend(node_buffer.iter_mut().map(Vec::as_mut_slice));
-
-                    let mut audio_buffer = AudioBuffer {
-                        inputs: system_input,
-                        outputs: &mut output_refs,
-                        frames: self.block_size,
-                    };
-
-                    // Process the node
-                    // REAL-TIME SAFE: Errors are ignored - in real-time audio we can't recover anyway
-                    // Buffers are pre-initialized with zeros, so silence is the default on error
-                    let _ = node.plugin.process(&mut audio_buffer, &event_buffer);
-                }
+        // Clear all input buffers (will be filled from connections or system_input)
+        for input_buffer in self.input_buffers.values_mut() {
+            for channel in input_buffer {
+                channel.fill(0.0);
             }
         }
 
-        // Copy last node output to system output
-        // TODO: Implement proper output routing
-        if let Some((_, node_buffer)) = self.node_buffers.iter().next() {
-            for (out_ch, node_ch) in system_output.iter_mut().zip(node_buffer.iter()) {
-                let len = out_ch.len().min(node_ch.len());
-                out_ch[..len].copy_from_slice(&node_ch[..len]);
+        // Build incoming connections map for quick lookup
+        // Map: destination_node_id -> Vec<source_node_id>
+        let mut incoming: HashMap<usize, Vec<usize>> = HashMap::new();
+        for conn in &self.connections {
+            incoming.entry(conn.to).or_default().push(conn.from);
+        }
+
+        // Build outgoing connections set for identifying output nodes
+        let outgoing: HashSet<usize> = self.connections.iter().map(|conn| conn.from).collect();
+
+        let event_buffer = EventBuffer::new();
+
+        // Process nodes in topological order
+        for &node_id in &self.processing_order {
+            // Route inputs for this node
+            if let Some(input_buffer) = self.input_buffers.get_mut(&node_id) {
+                if let Some(sources) = incoming.get(&node_id) {
+                    // This node has incoming connections - mix source outputs
+                    for &source_id in sources {
+                        if let Some(source_output) = self.node_buffers.get(&source_id) {
+                            // Mix source output into this node's input (additive)
+                            for (input_ch, source_ch) in
+                                input_buffer.iter_mut().zip(source_output.iter())
+                            {
+                                for (input_sample, &source_sample) in
+                                    input_ch.iter_mut().zip(source_ch.iter())
+                                {
+                                    *input_sample += source_sample;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // No incoming connections - this is an input node, use system_input
+                    for (input_ch, system_ch) in input_buffer.iter_mut().zip(system_input.iter()) {
+                        let len = input_ch.len().min(system_ch.len());
+                        input_ch[..len].copy_from_slice(&system_ch[..len]);
+                    }
+                }
+            }
+
+            // Process the node
+            if let (Some(node), Some(input_buffer), Some(output_buffer)) = (
+                self.nodes.get_mut(&node_id),
+                self.input_buffers.get(&node_id),
+                self.node_buffers.get_mut(&node_id),
+            ) {
+                // Create input references
+                let input_refs: Vec<&[Sample]> = input_buffer.iter().map(Vec::as_slice).collect();
+
+                // Create output references
+                // NOTE: Small Vec allocation (8-16 bytes) - unavoidable due to Rust's borrow checker
+                let mut output_refs: Vec<&mut [Sample]> = Vec::with_capacity(node.outputs());
+                output_refs.extend(output_buffer.iter_mut().map(Vec::as_mut_slice));
+
+                let mut audio_buffer = AudioBuffer {
+                    inputs: &input_refs,
+                    outputs: &mut output_refs,
+                    frames: self.block_size,
+                };
+
+                // Process (errors ignored - real-time safe, silence on error)
+                let _ = node.plugin.process(&mut audio_buffer, &event_buffer);
+            }
+        }
+
+        // Route outputs: mix all output nodes (no outgoing connections) to system_output
+        // Clear system output first
+        for channel in system_output.iter_mut() {
+            channel.fill(0.0);
+        }
+
+        for &node_id in &self.processing_order {
+            // Check if this node is an output node (no outgoing connections)
+            if !outgoing.contains(&node_id)
+                && let Some(node_output) = self.node_buffers.get(&node_id)
+            {
+                // Mix this output node to system_output (additive)
+                for (sys_ch, node_ch) in system_output.iter_mut().zip(node_output.iter()) {
+                    let len = sys_ch.len().min(node_ch.len());
+                    for i in 0..len {
+                        sys_ch[i] += node_ch[i];
+                    }
+                }
             }
         }
     }
@@ -918,5 +989,240 @@ mod tests {
             "Topological sort took {}ms (expected < 100ms)",
             sort_time.as_millis()
         );
+    }
+
+    // ============================================================================
+    // Connection-Based Routing Tests (Checkpoint 2)
+    // ============================================================================
+
+    #[test]
+    fn test_single_node_passthrough() {
+        // Test: system_input -> node -> system_output
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let _node = graph
+            .add_node(Box::new(DummyPlugin::new("PassThrough", 2, 2)))
+            .unwrap();
+
+        // Create test input
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create output buffer
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        // Process
+        graph.process(&input_refs, &mut output_refs);
+
+        // Verify: output should equal input (pass-through)
+        assert_eq!(output_data[0][0], 1.0);
+        assert_eq!(output_data[1][0], 2.0);
+    }
+
+    #[test]
+    fn test_linear_chain_routing() {
+        // Test: system_input -> A -> B -> C -> system_output
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_b, node_c).unwrap();
+
+        // Create test input
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create output buffer
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        // Process
+        graph.process(&input_refs, &mut output_refs);
+
+        // Verify: all nodes pass through, so output should equal input
+        assert_eq!(output_data[0][0], 1.0);
+        assert_eq!(output_data[1][0], 2.0);
+    }
+
+    #[test]
+    fn test_input_mixing() {
+        // Test: A -> C
+        //       B -> C
+        // Both A and B outputs should be mixed (summed) into C's input
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_c).unwrap();
+        graph.connect(node_b, node_c).unwrap();
+
+        // Create test input: different values for each input node
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // A and B both receive system_input and pass through
+        // C receives A + B mixed, so should be 2.0 + 4.0 = 2.0 (A) + 2.0 (B)
+        // Actually: A gets [1.0, 2.0], B gets [1.0, 2.0], C gets sum = [2.0, 4.0]
+        assert_eq!(output_data[0][0], 2.0); // 1.0 + 1.0
+        assert_eq!(output_data[1][0], 4.0); // 2.0 + 2.0
+    }
+
+    #[test]
+    fn test_parallel_paths() {
+        // Test: A -> B
+        //       A -> C
+        // A's output should be routed to both B and C
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_a, node_c).unwrap();
+
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // B and C are both output nodes (no outgoing connections)
+        // Both receive A's output, so system_output gets B + C mixed
+        // Each gets [1.0, 2.0] from A, so sum = [2.0, 4.0]
+        assert_eq!(output_data[0][0], 2.0);
+        assert_eq!(output_data[1][0], 4.0);
+    }
+
+    #[test]
+    fn test_diamond_pattern() {
+        // Test:     A
+        //          / \
+        //         B   C
+        //          \ /
+        //           D
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+        let node_d = graph
+            .add_node(Box::new(DummyPlugin::new("D", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_a, node_c).unwrap();
+        graph.connect(node_b, node_d).unwrap();
+        graph.connect(node_c, node_d).unwrap();
+
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // A gets [1.0, 2.0]
+        // B gets A's output: [1.0, 2.0]
+        // C gets A's output: [1.0, 2.0]
+        // D gets B + C mixed: [2.0, 4.0]
+        // system_output gets D: [2.0, 4.0]
+        assert_eq!(output_data[0][0], 2.0);
+        assert_eq!(output_data[1][0], 4.0);
+    }
+
+    #[test]
+    fn test_disconnected_nodes_output() {
+        // Test: A (disconnected), B (disconnected)
+        // Both should output to system_output (mixed)
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let _node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let _node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // Both A and B get system_input and pass through
+        // Both are output nodes, so mixed to system_output: [2.0, 4.0]
+        assert_eq!(output_data[0][0], 2.0);
+        assert_eq!(output_data[1][0], 4.0);
+    }
+
+    #[test]
+    fn test_no_output_nodes() {
+        // Test: A -> B (cycle, but fallback to linear order)
+        //       Both have outgoing connections, so no output to system
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_b, node_a).unwrap(); // Cycle
+
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // Both nodes have outgoing connections, so neither is an output node
+        // system_output should be silence
+        assert_eq!(output_data[0][0], 0.0);
+        assert_eq!(output_data[1][0], 0.0);
     }
 }
