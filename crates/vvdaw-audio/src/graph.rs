@@ -62,6 +62,12 @@ pub struct AudioGraph {
     // Pre-computed processing order (sorted node IDs)
     // Updated when nodes are added/removed to avoid allocating in process()
     processing_order: Vec<usize>,
+
+    // Pre-computed connection maps (avoid allocating in process())
+    // Map from destination node to list of source nodes
+    incoming: HashMap<usize, Vec<usize>>,
+    // Set of nodes with outgoing connections (used to identify output nodes)
+    outgoing: HashSet<usize>,
 }
 
 impl AudioGraph {
@@ -81,6 +87,8 @@ impl AudioGraph {
             node_buffers: HashMap::new(),
             input_buffers: HashMap::new(),
             processing_order: Vec::new(),
+            incoming: HashMap::new(),
+            outgoing: HashSet::new(),
         }
     }
 
@@ -247,6 +255,23 @@ impl AudioGraph {
                 self.processing_order.sort_unstable();
             }
         }
+
+        // Update connection caches
+        self.update_connection_cache();
+    }
+
+    /// Update pre-computed connection maps to avoid allocating in `process()`
+    ///
+    /// This rebuilds the `incoming` and `outgoing` maps used for routing audio.
+    /// Called whenever connections change (connect, disconnect, `remove_node`).
+    fn update_connection_cache(&mut self) {
+        self.incoming.clear();
+        self.outgoing.clear();
+
+        for conn in &self.connections {
+            self.incoming.entry(conn.to).or_default().push(conn.from);
+            self.outgoing.insert(conn.from);
+        }
     }
 
     /// Perform topological sort using Kahn's algorithm
@@ -365,15 +390,9 @@ impl AudioGraph {
             }
         }
 
-        // Build incoming connections map for quick lookup
-        // Map: destination_node_id -> Vec<source_node_id>
-        let mut incoming: HashMap<usize, Vec<usize>> = HashMap::new();
-        for conn in &self.connections {
-            incoming.entry(conn.to).or_default().push(conn.from);
-        }
-
-        // Build outgoing connections set for identifying output nodes
-        let outgoing: HashSet<usize> = self.connections.iter().map(|conn| conn.from).collect();
+        // Use pre-computed connection maps (avoids allocating in hot path)
+        let incoming = &self.incoming;
+        let outgoing = &self.outgoing;
 
         let event_buffer = EventBuffer::new();
 
@@ -412,27 +431,31 @@ impl AudioGraph {
                 self.input_buffers.get(&node_id),
                 self.node_buffers.get_mut(&node_id),
             ) {
-                // Create input/output slice references
-                // NOTE: These Vec allocations are small (typically 16-64 bytes for 2-8 channels)
-                // and unavoidable without unsafe code due to Rust's drop checker:
-                //
-                // SmallVec would avoid heap allocation, but triggers lifetime issues because
-                // the compiler can't prove SmallVec's Drop doesn't use the borrowed slices.
-                // Vec has special treatment in the borrow checker that SmallVec lacks.
-                //
-                // In practice, this is acceptable for real-time audio:
-                // - Allocation size is tiny and predictable (8 bytes * channel_count)
-                // - Modern allocators (jemalloc, mimalloc) handle small allocations efficiently
-                // - The alternative (unsafe code) adds maintenance burden
-                // - Pre-allocating with capacity helps allocators reuse memory pools
-                let input_refs: Vec<&[Sample]> = input_buffer.iter().map(Vec::as_slice).collect();
+                // Create input/output slice references using stack-allocated arrays
+                // Maximum 32 channels supported (more than typical DAW use cases)
+                const MAX_CHANNELS: usize = 32;
 
-                let mut output_refs: Vec<&mut [Sample]> = Vec::with_capacity(node.outputs());
-                output_refs.extend(output_buffer.iter_mut().map(Vec::as_mut_slice));
+                // Use array::from_fn to create fixed-size arrays on the stack (no heap allocation)
+                // Unused slots are filled with empty slices
+                let input_refs_array: [&[Sample]; MAX_CHANNELS] = std::array::from_fn(|i| {
+                    input_buffer.get(i).map_or(&[][..], std::vec::Vec::as_slice)
+                });
+
+                // For output refs, we need mutable references, which is trickier
+                // We have to use a temporary vector here because:
+                // 1. array::from_fn doesn't work with mutable references (can't iterate mutably twice)
+                // 2. There's no safe way to create [&mut [T]; N] without unsafe or Vec
+                // This is a small allocation (8 bytes * channel_count) but unavoidable without unsafe
+                let mut output_refs_vec: Vec<&mut [Sample]> =
+                    output_buffer.iter_mut().map(Vec::as_mut_slice).collect();
+
+                // Use only the channels we need from the input array
+                let input_count = input_buffer.len().min(MAX_CHANNELS);
+                let input_refs = &input_refs_array[..input_count];
 
                 let mut audio_buffer = AudioBuffer {
-                    inputs: &input_refs,
-                    outputs: &mut output_refs,
+                    inputs: input_refs,
+                    outputs: &mut output_refs_vec,
                     frames: self.block_size,
                 };
 
