@@ -5,6 +5,25 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use vvdaw_core::{Frames, Sample, SampleRate};
 use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin, PluginError};
 
+/// Maximum number of channels supported per node
+///
+/// This limit is enforced in `process()` where stack-allocated arrays are used
+/// to avoid heap allocations. Nodes with more channels will have excess channels
+/// silently truncated during processing.
+///
+/// 32 channels is more than sufficient for typical DAW use cases:
+/// - Stereo: 2 channels
+/// - Surround 5.1: 6 channels
+/// - Surround 7.1: 8 channels
+/// - Dolby Atmos bed: 16 channels
+const MAX_CHANNELS: usize = 32;
+
+/// Maximum block size (in frames) to prevent excessive memory allocation
+///
+/// 8192 frames at 48kHz = ~170ms of audio, which is already quite large for
+/// real-time processing. Most DAWs use 64-512 frames for low-latency work.
+const MAX_BLOCK_SIZE: Frames = 8192;
+
 /// A node in the audio graph (typically wraps a plugin)
 pub struct AudioNode {
     id: usize,
@@ -93,7 +112,22 @@ impl AudioGraph {
     }
 
     /// Initialize or update the graph configuration
+    ///
+    /// # Validation
+    ///
+    /// Block size is validated against [`MAX_BLOCK_SIZE`] to prevent excessive memory allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `block_size` exceeds [`MAX_BLOCK_SIZE`]. This is a programming error that should
+    /// be caught during development, not at runtime in production.
     pub fn set_config(&mut self, sample_rate: SampleRate, block_size: Frames) {
+        // Validate block size
+        assert!(
+            block_size <= MAX_BLOCK_SIZE,
+            "Block size {block_size} exceeds maximum {MAX_BLOCK_SIZE}. This is a programming error."
+        );
+
         self.sample_rate = sample_rate;
         self.block_size = block_size;
 
@@ -109,15 +143,47 @@ impl AudioGraph {
     }
 
     /// Add a node to the graph
+    ///
+    /// # Validation
+    ///
+    /// - Channel counts exceeding [`MAX_CHANNELS`] will be warned about but allowed.
+    ///   Excess channels will be silently truncated during processing.
+    /// - Current block size is validated against [`MAX_BLOCK_SIZE`].
     pub fn add_node(&mut self, mut plugin: Box<dyn Plugin>) -> Result<usize, PluginError> {
         let id = self.next_id;
         self.next_id += 1;
+
+        // Validate block size before initializing plugin
+        if self.block_size > MAX_BLOCK_SIZE {
+            return Err(PluginError::InitializationFailed(format!(
+                "Block size {} exceeds maximum {}",
+                self.block_size, MAX_BLOCK_SIZE
+            )));
+        }
 
         // Initialize the plugin
         plugin.initialize(self.sample_rate, self.block_size)?;
 
         let inputs = plugin.input_channels();
         let outputs = plugin.output_channels();
+
+        // Validate channel counts (warn but allow - excess channels will be truncated)
+        if inputs > MAX_CHANNELS {
+            tracing::warn!(
+                "Node {} has {} input channels (max {}). Excess channels will be truncated.",
+                id,
+                inputs,
+                MAX_CHANNELS
+            );
+        }
+        if outputs > MAX_CHANNELS {
+            tracing::warn!(
+                "Node {} has {} output channels (max {}). Excess channels will be truncated.",
+                id,
+                outputs,
+                MAX_CHANNELS
+            );
+        }
 
         self.nodes.insert(
             id,
@@ -170,20 +236,21 @@ impl AudioGraph {
     /// - **Downmixing**: A stereo source (2 channels) can feed a mono analyzer (1 channel)
     /// - **Summing**: Multiple nodes can connect to the same destination (mixer pattern)
     ///
-    /// Channel routing and mixing logic is implemented in the `process()` method.
-    /// Checkpoint 2 will add explicit per-channel routing.
+    /// Channel routing and mixing logic is implemented in the `process()` method
+    /// using connection-based routing (Checkpoint 2).
     ///
     /// # Current Limitations
     ///
-    /// - All connections currently route all available channels (no per-channel routing)
+    /// - All connections route all available channels (no per-channel routing)
     /// - Channel count mismatches are handled by truncation or zero-padding in `process()`
     /// - No validation for mono-only or stereo-only plugin requirements
     ///
-    /// # Future Work (Checkpoint 2)
+    /// # Future Work (Checkpoint 3+)
     ///
     /// - Per-channel routing (e.g., "connect output channel 0 to input channel 1")
-    /// - Explicit mixing configuration (sum, replace, etc.)
+    /// - Explicit mixing configuration (sum, average, replace, etc.)
     /// - Validation modes for strict channel matching
+    /// - Automatic gain compensation for summing multiple sources
     pub fn connect(&mut self, from: usize, to: usize) -> Result<(), String> {
         if !self.nodes.contains_key(&from) {
             return Err(format!("Source node {from} not found"));
@@ -432,9 +499,7 @@ impl AudioGraph {
                 self.node_buffers.get_mut(&node_id),
             ) {
                 // Create input/output slice references using stack-allocated arrays
-                // Maximum 32 channels supported (more than typical DAW use cases)
-                const MAX_CHANNELS: usize = 32;
-
+                // Uses module-level MAX_CHANNELS constant (validated in add_node())
                 // Use array::from_fn to create fixed-size arrays on the stack (no heap allocation)
                 // Unused slots are filled with empty slices
                 let input_refs_array: [&[Sample]; MAX_CHANNELS] = std::array::from_fn(|i| {
