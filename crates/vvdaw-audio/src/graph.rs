@@ -156,6 +156,8 @@ impl AudioGraph {
         let conn = Connection { from, to };
         if self.connections.insert(conn) {
             tracing::debug!("Connected {} -> {}", from, to);
+            // Update processing order to reflect new dependencies
+            self.update_processing_order();
         }
 
         Ok(())
@@ -166,6 +168,8 @@ impl AudioGraph {
         let conn = Connection { from, to };
         if self.connections.remove(&conn) {
             tracing::debug!("Disconnected {} -> {}", from, to);
+            // Update processing order to reflect removed dependency
+            self.update_processing_order();
         }
     }
 
@@ -177,10 +181,99 @@ impl AudioGraph {
 
     /// Update the processing order after graph structure changes
     /// IMPORTANT: This allocates, so call it when adding/removing nodes, NOT in `process()`
+    ///
+    /// Uses topological sort (Kahn's algorithm) to determine processing order.
+    /// Nodes are processed in dependency order: a node is processed only after
+    /// all nodes that feed into it have been processed.
+    ///
+    /// If the graph contains cycles, falls back to sorted node IDs (linear order).
     fn update_processing_order(&mut self) {
         self.processing_order.clear();
-        self.processing_order.extend(self.nodes.keys().copied());
-        self.processing_order.sort_unstable();
+
+        // Attempt topological sort
+        match self.topological_sort() {
+            Ok(order) => {
+                self.processing_order = order;
+                tracing::debug!(
+                    "Updated processing order (topological): {:?}",
+                    self.processing_order
+                );
+            }
+            Err(cycle_nodes) => {
+                // Graph has cycles - fall back to sorted ID order
+                tracing::warn!(
+                    "Graph contains cycle involving nodes: {:?}. Using linear order instead.",
+                    cycle_nodes
+                );
+                // Clear is already done above, but be explicit for clarity
+                self.processing_order.clear();
+                self.processing_order.extend(self.nodes.keys().copied());
+                self.processing_order.sort_unstable();
+            }
+        }
+    }
+
+    /// Perform topological sort using Kahn's algorithm
+    ///
+    /// Returns Ok(order) if graph is acyclic, `Err(remaining_nodes)` if cycles exist.
+    fn topological_sort(&self) -> Result<Vec<usize>, Vec<usize>> {
+        // Build in-degree map: count incoming edges for each node
+        let mut in_degree: HashMap<usize, usize> = self.nodes.keys().map(|&id| (id, 0)).collect();
+
+        for conn in &self.connections {
+            *in_degree.entry(conn.to).or_insert(0) += 1;
+        }
+
+        // Start with nodes that have no incoming edges
+        let mut queue: Vec<usize> = in_degree
+            .iter()
+            .filter(|&(_, &degree)| degree == 0)
+            .map(|(&id, _)| id)
+            .collect();
+
+        // Sort queue for deterministic ordering
+        queue.sort_unstable();
+
+        let mut result = Vec::new();
+
+        // Process queue in order (remove from front to maintain sorted order)
+        while !queue.is_empty() {
+            let node_id = queue.remove(0);
+            result.push(node_id);
+
+            // Find all outgoing connections from this node
+            let outgoing: Vec<usize> = self
+                .connections
+                .iter()
+                .filter(|conn| conn.from == node_id)
+                .map(|conn| conn.to)
+                .collect();
+
+            // Reduce in-degree of connected nodes
+            for &to_id in &outgoing {
+                if let Some(degree) = in_degree.get_mut(&to_id) {
+                    *degree -= 1;
+                    if *degree == 0 {
+                        queue.push(to_id);
+                        queue.sort_unstable(); // Keep deterministic
+                    }
+                }
+            }
+        }
+
+        // Check if we processed all nodes
+        if result.len() == self.nodes.len() {
+            Ok(result)
+        } else {
+            // Cycle detected - return nodes that couldn't be processed
+            let remaining: Vec<usize> = self
+                .nodes
+                .keys()
+                .filter(|id| !result.contains(id))
+                .copied()
+                .collect();
+            Err(remaining)
+        }
     }
 
     /// Allocate all buffers based on current nodes
@@ -253,5 +346,433 @@ impl AudioGraph {
 impl Default for AudioGraph {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vvdaw_plugin::{AudioBuffer, EventBuffer, PluginError, PluginInfo};
+
+    /// Dummy plugin for testing that just copies input to output
+    struct DummyPlugin {
+        info: PluginInfo,
+        inputs: usize,
+        outputs: usize,
+    }
+
+    impl DummyPlugin {
+        fn new(name: &str, inputs: usize, outputs: usize) -> Self {
+            Self {
+                info: PluginInfo {
+                    name: name.to_string(),
+                    vendor: "Test".to_string(),
+                    version: "1.0".to_string(),
+                    unique_id: format!("test_{name}"),
+                },
+                inputs,
+                outputs,
+            }
+        }
+    }
+
+    impl Plugin for DummyPlugin {
+        fn info(&self) -> &PluginInfo {
+            &self.info
+        }
+
+        fn initialize(
+            &mut self,
+            _sample_rate: SampleRate,
+            _max_block_size: Frames,
+        ) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        fn process(
+            &mut self,
+            audio: &mut AudioBuffer,
+            _events: &EventBuffer,
+        ) -> Result<(), PluginError> {
+            for (input, output) in audio.inputs.iter().zip(audio.outputs.iter_mut()) {
+                output[..audio.frames].copy_from_slice(&input[..audio.frames]);
+            }
+            Ok(())
+        }
+
+        fn set_parameter(&mut self, _id: u32, _value: f32) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        fn get_parameter(&self, _id: u32) -> Result<f32, PluginError> {
+            Ok(0.0)
+        }
+
+        fn parameters(&self) -> Vec<vvdaw_plugin::ParameterInfo> {
+            Vec::new()
+        }
+
+        fn input_channels(&self) -> usize {
+            self.inputs
+        }
+
+        fn output_channels(&self) -> usize {
+            self.outputs
+        }
+
+        fn deactivate(&mut self) {}
+    }
+
+    #[test]
+    fn test_empty_graph_topological_sort() {
+        let graph = AudioGraph::new();
+        let result = graph.topological_sort();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn test_single_node_topological_sort() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+
+        let result = graph.topological_sort();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![node_a]);
+    }
+
+    #[test]
+    fn test_linear_chain_topological_sort() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_b, node_c).unwrap();
+
+        let result = graph.topological_sort();
+        assert!(result.is_ok());
+        let order = result.unwrap();
+
+        // A must come before B, B must come before C
+        let pos_a = order.iter().position(|&id| id == node_a).unwrap();
+        let pos_b = order.iter().position(|&id| id == node_b).unwrap();
+        let pos_c = order.iter().position(|&id| id == node_c).unwrap();
+
+        assert!(pos_a < pos_b);
+        assert!(pos_b < pos_c);
+    }
+
+    #[test]
+    fn test_parallel_paths_topological_sort() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+        let node_d = graph
+            .add_node(Box::new(DummyPlugin::new("D", 2, 2)))
+            .unwrap();
+
+        // A -> B -> D
+        // A -> C -> D
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_a, node_c).unwrap();
+        graph.connect(node_b, node_d).unwrap();
+        graph.connect(node_c, node_d).unwrap();
+
+        let result = graph.topological_sort();
+        assert!(result.is_ok());
+        let order = result.unwrap();
+
+        let pos_a = order.iter().position(|&id| id == node_a).unwrap();
+        let pos_b = order.iter().position(|&id| id == node_b).unwrap();
+        let pos_c = order.iter().position(|&id| id == node_c).unwrap();
+        let pos_d = order.iter().position(|&id| id == node_d).unwrap();
+
+        // A must come before both B and C
+        assert!(pos_a < pos_b);
+        assert!(pos_a < pos_c);
+
+        // Both B and C must come before D
+        assert!(pos_b < pos_d);
+        assert!(pos_c < pos_d);
+    }
+
+    #[test]
+    fn test_disconnected_nodes_topological_sort() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        // No connections - all nodes independent
+        let result = graph.topological_sort();
+        assert!(result.is_ok());
+        let order = result.unwrap();
+
+        // All nodes should be present
+        assert_eq!(order.len(), 3);
+        assert!(order.contains(&node_a));
+        assert!(order.contains(&node_b));
+        assert!(order.contains(&node_c));
+    }
+
+    #[test]
+    fn test_simple_cycle_detection() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        // Create cycle: A -> B -> C -> A
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_b, node_c).unwrap();
+        graph.connect(node_c, node_a).unwrap();
+
+        let result = graph.topological_sort();
+        assert!(result.is_err());
+        let remaining = result.unwrap_err();
+
+        // All three nodes should be in the cycle
+        assert_eq!(remaining.len(), 3);
+        assert!(remaining.contains(&node_a));
+        assert!(remaining.contains(&node_b));
+        assert!(remaining.contains(&node_c));
+    }
+
+    #[test]
+    fn test_self_loop_cycle_detection() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+
+        // Create self-loop: A -> A
+        graph.connect(node_a, node_a).unwrap();
+
+        let result = graph.topological_sort();
+        assert!(result.is_err());
+        let remaining = result.unwrap_err();
+
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining.contains(&node_a));
+    }
+
+    #[test]
+    fn test_partial_cycle_detection() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+        let node_d = graph
+            .add_node(Box::new(DummyPlugin::new("D", 2, 2)))
+            .unwrap();
+
+        // A -> B -> C -> B (cycle between B and C)
+        // D is independent
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_b, node_c).unwrap();
+        graph.connect(node_c, node_b).unwrap();
+
+        let result = graph.topological_sort();
+        assert!(result.is_err());
+        let remaining = result.unwrap_err();
+
+        // B and C are in the cycle
+        assert!(remaining.contains(&node_b));
+        assert!(remaining.contains(&node_c));
+
+        // A and D should have been processed
+        assert!(!remaining.contains(&node_a));
+        assert!(!remaining.contains(&node_d));
+    }
+
+    #[test]
+    fn test_processing_order_updates_on_add() {
+        let mut graph = AudioGraph::new();
+
+        // Initially empty
+        assert_eq!(graph.processing_order.len(), 0);
+
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        assert_eq!(graph.processing_order.len(), 1);
+        assert_eq!(graph.processing_order[0], node_a);
+
+        let _node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        assert_eq!(graph.processing_order.len(), 2);
+    }
+
+    #[test]
+    fn test_processing_order_updates_on_remove() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+
+        assert_eq!(graph.processing_order.len(), 2);
+
+        graph.remove_node(node_a);
+        assert_eq!(graph.processing_order.len(), 1);
+        assert_eq!(graph.processing_order[0], node_b);
+    }
+
+    #[test]
+    fn test_processing_order_respects_dependencies() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        // Connect in reverse order to test sorting
+        graph.connect(node_c, node_b).unwrap();
+        graph.connect(node_b, node_a).unwrap();
+
+        let pos_a = graph
+            .processing_order
+            .iter()
+            .position(|&id| id == node_a)
+            .unwrap();
+        let pos_b = graph
+            .processing_order
+            .iter()
+            .position(|&id| id == node_b)
+            .unwrap();
+        let pos_c = graph
+            .processing_order
+            .iter()
+            .position(|&id| id == node_c)
+            .unwrap();
+
+        // C -> B -> A, so process order should be C, B, A
+        assert!(pos_c < pos_b);
+        assert!(pos_b < pos_a);
+    }
+
+    #[test]
+    fn test_cycle_fallback_to_linear_order() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+
+        // Create cycle
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_b, node_a).unwrap();
+
+        // Processing order should fall back to sorted IDs
+        assert_eq!(graph.processing_order.len(), 2);
+
+        // Should be sorted by ID (linear order)
+        let mut expected = vec![node_a, node_b];
+        expected.sort_unstable();
+        assert_eq!(graph.processing_order, expected);
+    }
+
+    #[test]
+    fn test_connection_management() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+
+        // Test connect
+        assert!(graph.connect(node_a, node_b).is_ok());
+
+        // Test invalid connections
+        assert!(graph.connect(999, node_b).is_err());
+        assert!(graph.connect(node_a, 999).is_err());
+
+        // Test disconnect
+        graph.disconnect(node_a, node_b);
+
+        // After disconnect, should be back to independent nodes
+        let result = graph.topological_sort().unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_remove_node_removes_connections() {
+        let mut graph = AudioGraph::new();
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_b, node_c).unwrap();
+
+        // Remove middle node
+        graph.remove_node(node_b);
+
+        // Should have 2 nodes left
+        assert_eq!(graph.nodes.len(), 2);
+
+        // No connections should remain
+        assert_eq!(graph.connections.len(), 0);
+
+        // Topological sort should succeed with remaining nodes
+        let result = graph.topological_sort().unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&node_a));
+        assert!(result.contains(&node_c));
     }
 }
