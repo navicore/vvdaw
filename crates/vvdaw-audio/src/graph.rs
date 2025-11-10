@@ -5,6 +5,25 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use vvdaw_core::{Frames, Sample, SampleRate};
 use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin, PluginError};
 
+/// Maximum number of channels supported per node
+///
+/// This limit is enforced in `process()` where stack-allocated arrays are used
+/// to avoid heap allocations. Nodes with more channels will have excess channels
+/// silently truncated during processing.
+///
+/// 32 channels is more than sufficient for typical DAW use cases:
+/// - Stereo: 2 channels
+/// - Surround 5.1: 6 channels
+/// - Surround 7.1: 8 channels
+/// - Dolby Atmos bed: 16 channels
+const MAX_CHANNELS: usize = 32;
+
+/// Maximum block size (in frames) to prevent excessive memory allocation
+///
+/// 8192 frames at 48kHz = ~170ms of audio, which is already quite large for
+/// real-time processing. Most DAWs use 64-512 frames for low-latency work.
+const MAX_BLOCK_SIZE: Frames = 8192;
+
 /// A node in the audio graph (typically wraps a plugin)
 pub struct AudioNode {
     id: usize,
@@ -55,9 +74,19 @@ pub struct AudioGraph {
     // Map from node_id to its output buffer
     node_buffers: HashMap<usize, Vec<Vec<Sample>>>,
 
+    // Input buffers for mixing connected node outputs
+    // Map from node_id to its input buffer (cleared and mixed before each process)
+    input_buffers: HashMap<usize, Vec<Vec<Sample>>>,
+
     // Pre-computed processing order (sorted node IDs)
     // Updated when nodes are added/removed to avoid allocating in process()
     processing_order: Vec<usize>,
+
+    // Pre-computed connection maps (avoid allocating in process())
+    // Map from destination node to list of source nodes
+    incoming: HashMap<usize, Vec<usize>>,
+    // Set of nodes with outgoing connections (used to identify output nodes)
+    outgoing: HashSet<usize>,
 }
 
 impl AudioGraph {
@@ -75,12 +104,30 @@ impl AudioGraph {
             sample_rate,
             block_size,
             node_buffers: HashMap::new(),
+            input_buffers: HashMap::new(),
             processing_order: Vec::new(),
+            incoming: HashMap::new(),
+            outgoing: HashSet::new(),
         }
     }
 
     /// Initialize or update the graph configuration
+    ///
+    /// # Validation
+    ///
+    /// Block size is validated against [`MAX_BLOCK_SIZE`] to prevent excessive memory allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `block_size` exceeds [`MAX_BLOCK_SIZE`]. This is a programming error that should
+    /// be caught during development, not at runtime in production.
     pub fn set_config(&mut self, sample_rate: SampleRate, block_size: Frames) {
+        // Validate block size
+        assert!(
+            block_size <= MAX_BLOCK_SIZE,
+            "Block size {block_size} exceeds maximum {MAX_BLOCK_SIZE}. This is a programming error."
+        );
+
         self.sample_rate = sample_rate;
         self.block_size = block_size;
 
@@ -96,15 +143,47 @@ impl AudioGraph {
     }
 
     /// Add a node to the graph
+    ///
+    /// # Validation
+    ///
+    /// - Channel counts exceeding [`MAX_CHANNELS`] will be warned about but allowed.
+    ///   Excess channels will be silently truncated during processing.
+    /// - Current block size is validated against [`MAX_BLOCK_SIZE`].
     pub fn add_node(&mut self, mut plugin: Box<dyn Plugin>) -> Result<usize, PluginError> {
         let id = self.next_id;
         self.next_id += 1;
+
+        // Validate block size before initializing plugin
+        if self.block_size > MAX_BLOCK_SIZE {
+            return Err(PluginError::InitializationFailed(format!(
+                "Block size {} exceeds maximum {}",
+                self.block_size, MAX_BLOCK_SIZE
+            )));
+        }
 
         // Initialize the plugin
         plugin.initialize(self.sample_rate, self.block_size)?;
 
         let inputs = plugin.input_channels();
         let outputs = plugin.output_channels();
+
+        // Validate channel counts (warn but allow - excess channels will be truncated)
+        if inputs > MAX_CHANNELS {
+            tracing::warn!(
+                "Node {} has {} input channels (max {}). Excess channels will be truncated.",
+                id,
+                inputs,
+                MAX_CHANNELS
+            );
+        }
+        if outputs > MAX_CHANNELS {
+            tracing::warn!(
+                "Node {} has {} output channels (max {}). Excess channels will be truncated.",
+                id,
+                outputs,
+                MAX_CHANNELS
+            );
+        }
 
         self.nodes.insert(
             id,
@@ -116,8 +195,8 @@ impl AudioGraph {
             },
         );
 
-        // Allocate buffer for this node's output
-        self.allocate_node_buffer(id, outputs);
+        // Allocate buffers for this node's input and output
+        self.allocate_node_buffer(id, inputs, outputs);
 
         // Update processing order (allocates, but not in audio callback)
         self.update_processing_order();
@@ -135,8 +214,9 @@ impl AudioGraph {
         // Remove the node
         let node = self.nodes.remove(&id)?;
 
-        // Remove its buffer
+        // Remove its buffers
         self.node_buffers.remove(&id);
+        self.input_buffers.remove(&id);
 
         // Update processing order (allocates, but not in audio callback)
         self.update_processing_order();
@@ -156,20 +236,21 @@ impl AudioGraph {
     /// - **Downmixing**: A stereo source (2 channels) can feed a mono analyzer (1 channel)
     /// - **Summing**: Multiple nodes can connect to the same destination (mixer pattern)
     ///
-    /// Channel routing and mixing logic is implemented in the `process()` method.
-    /// Checkpoint 2 will add explicit per-channel routing.
+    /// Channel routing and mixing logic is implemented in the `process()` method
+    /// using connection-based routing (Checkpoint 2).
     ///
     /// # Current Limitations
     ///
-    /// - All connections currently route all available channels (no per-channel routing)
+    /// - All connections route all available channels (no per-channel routing)
     /// - Channel count mismatches are handled by truncation or zero-padding in `process()`
     /// - No validation for mono-only or stereo-only plugin requirements
     ///
-    /// # Future Work (Checkpoint 2)
+    /// # Future Work (Checkpoint 3+)
     ///
     /// - Per-channel routing (e.g., "connect output channel 0 to input channel 1")
-    /// - Explicit mixing configuration (sum, replace, etc.)
+    /// - Explicit mixing configuration (sum, average, replace, etc.)
     /// - Validation modes for strict channel matching
+    /// - Automatic gain compensation for summing multiple sources
     pub fn connect(&mut self, from: usize, to: usize) -> Result<(), String> {
         if !self.nodes.contains_key(&from) {
             return Err(format!("Source node {from} not found"));
@@ -198,10 +279,17 @@ impl AudioGraph {
         }
     }
 
-    /// Allocate buffer for a node's output
-    fn allocate_node_buffer(&mut self, node_id: usize, channel_count: usize) {
-        let buffer = vec![vec![0.0; self.block_size]; channel_count];
-        self.node_buffers.insert(node_id, buffer);
+    /// Allocate input and output buffers for a node
+    fn allocate_node_buffer(
+        &mut self,
+        node_id: usize,
+        input_channels: usize,
+        output_channels: usize,
+    ) {
+        let input_buffer = vec![vec![0.0; self.block_size]; input_channels];
+        let output_buffer = vec![vec![0.0; self.block_size]; output_channels];
+        self.input_buffers.insert(node_id, input_buffer);
+        self.node_buffers.insert(node_id, output_buffer);
     }
 
     /// Update the processing order after graph structure changes
@@ -233,6 +321,23 @@ impl AudioGraph {
                 self.processing_order.extend(self.nodes.keys().copied());
                 self.processing_order.sort_unstable();
             }
+        }
+
+        // Update connection caches
+        self.update_connection_cache();
+    }
+
+    /// Update pre-computed connection maps to avoid allocating in `process()`
+    ///
+    /// This rebuilds the `incoming` and `outgoing` maps used for routing audio.
+    /// Called whenever connections change (connect, disconnect, `remove_node`).
+    fn update_connection_cache(&mut self) {
+        self.incoming.clear();
+        self.outgoing.clear();
+
+        for conn in &self.connections {
+            self.incoming.entry(conn.to).or_default().push(conn.from);
+            self.outgoing.insert(conn.from);
         }
     }
 
@@ -306,65 +411,144 @@ impl AudioGraph {
     /// Allocate all buffers based on current nodes
     fn allocate_buffers(&mut self) {
         self.node_buffers.clear();
+        self.input_buffers.clear();
         for (&id, node) in &self.nodes {
-            let buffer = vec![vec![0.0; self.block_size]; node.outputs];
-            self.node_buffers.insert(id, buffer);
+            let input_buffer = vec![vec![0.0; self.block_size]; node.inputs];
+            let output_buffer = vec![vec![0.0; self.block_size]; node.outputs];
+            self.input_buffers.insert(id, input_buffer);
+            self.node_buffers.insert(id, output_buffer);
         }
     }
 
-    /// Process all nodes in the graph
+    /// Process all nodes in the graph with connection-based routing
+    ///
+    /// # Audio Flow
+    /// 1. Input nodes (no incoming connections) receive `system_input`
+    /// 2. Connected nodes receive mixed outputs from their source nodes
+    /// 3. Output nodes (no outgoing connections) are mixed to `system_output`
+    ///
+    /// # Mixing Strategy
+    /// Uses **additive mixing** (sum all sources) without gain compensation.
+    ///
+    /// ## Clipping Risk Warning
+    /// When multiple loud sources are summed, the output can exceed ±1.0 and cause clipping.
+    /// For example:
+    /// - Two nodes outputting 0.8 → sum = 1.6 (clipped to 1.0)
+    /// - Three nodes outputting 0.5 → sum = 1.5 (clipped to 1.0)
+    ///
+    /// **Mitigation strategies:**
+    /// - Keep individual node outputs at lower levels when mixing multiple sources
+    /// - Use gain/attenuation plugins in the graph to control levels
+    /// - Add a master limiter at the output
+    /// - Future: Implement automatic gain compensation (divide by source count)
     pub fn process(&mut self, system_input: &[&[Sample]], system_output: &mut [&mut [Sample]]) {
         if self.nodes.is_empty() {
-            // No nodes - pass through silence
+            // No nodes - output silence
             for channel in system_output.iter_mut() {
                 channel.fill(0.0);
             }
             return;
         }
 
-        // For now, deterministic linear processing (sorted by node ID)
-        // TODO: Implement proper topological sort for complex graphs
-        let event_buffer = EventBuffer::new();
-
-        // Use pre-computed processing order (no allocation!)
-        // REAL-TIME SAFE: processing_order is updated when nodes are added/removed,
-        // not during audio processing
-        for &node_id in &self.processing_order {
-            // SAFETY: We know the node exists because we just got the ID from keys()
-            if let Some(node) = self.nodes.get_mut(&node_id) {
-                // Prepare input buffer (for now, use system input)
-                // TODO: Mix inputs from connected nodes
-                if let Some(node_buffer) = self.node_buffers.get_mut(&node_id) {
-                    // Create mutable references for AudioBuffer
-                    // NOTE: This Vec allocation is small (8-16 bytes for typical channel counts)
-                    // and unavoidable without unsafe code due to Rust's drop checker.
-                    // SmallVec would avoid heap allocation but triggers lifetime issues:
-                    // the compiler can't prove SmallVec's Drop doesn't use the borrowed slices.
-                    // Vec has special treatment in the borrow checker that SmallVec lacks.
-                    // Pre-allocating with capacity helps modern allocators reuse memory.
-                    let mut output_refs: Vec<&mut [Sample]> = Vec::with_capacity(node.outputs());
-                    output_refs.extend(node_buffer.iter_mut().map(Vec::as_mut_slice));
-
-                    let mut audio_buffer = AudioBuffer {
-                        inputs: system_input,
-                        outputs: &mut output_refs,
-                        frames: self.block_size,
-                    };
-
-                    // Process the node
-                    // REAL-TIME SAFE: Errors are ignored - in real-time audio we can't recover anyway
-                    // Buffers are pre-initialized with zeros, so silence is the default on error
-                    let _ = node.plugin.process(&mut audio_buffer, &event_buffer);
-                }
+        // Clear all input buffers (will be filled from connections or system_input)
+        for input_buffer in self.input_buffers.values_mut() {
+            for channel in input_buffer {
+                channel.fill(0.0);
             }
         }
 
-        // Copy last node output to system output
-        // TODO: Implement proper output routing
-        if let Some((_, node_buffer)) = self.node_buffers.iter().next() {
-            for (out_ch, node_ch) in system_output.iter_mut().zip(node_buffer.iter()) {
-                let len = out_ch.len().min(node_ch.len());
-                out_ch[..len].copy_from_slice(&node_ch[..len]);
+        // Use pre-computed connection maps (avoids allocating in hot path)
+        let incoming = &self.incoming;
+        let outgoing = &self.outgoing;
+
+        let event_buffer = EventBuffer::new();
+
+        // Process nodes in topological order
+        for &node_id in &self.processing_order {
+            // Route inputs for this node
+            if let Some(input_buffer) = self.input_buffers.get_mut(&node_id) {
+                if let Some(sources) = incoming.get(&node_id) {
+                    // This node has incoming connections - mix source outputs
+                    for &source_id in sources {
+                        if let Some(source_output) = self.node_buffers.get(&source_id) {
+                            // Mix source output into this node's input (additive)
+                            for (input_ch, source_ch) in
+                                input_buffer.iter_mut().zip(source_output.iter())
+                            {
+                                for (input_sample, &source_sample) in
+                                    input_ch.iter_mut().zip(source_ch.iter())
+                                {
+                                    *input_sample += source_sample;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // No incoming connections - this is an input node, use system_input
+                    for (input_ch, system_ch) in input_buffer.iter_mut().zip(system_input.iter()) {
+                        let len = input_ch.len().min(system_ch.len());
+                        input_ch[..len].copy_from_slice(&system_ch[..len]);
+                    }
+                }
+            }
+
+            // Process the node
+            if let (Some(node), Some(input_buffer), Some(output_buffer)) = (
+                self.nodes.get_mut(&node_id),
+                self.input_buffers.get(&node_id),
+                self.node_buffers.get_mut(&node_id),
+            ) {
+                // Create input/output slice references using stack-allocated arrays
+                // Uses module-level MAX_CHANNELS constant (validated in add_node())
+                // Use array::from_fn to create fixed-size arrays on the stack (no heap allocation)
+                // Unused slots are filled with empty slices
+                let input_refs_array: [&[Sample]; MAX_CHANNELS] = std::array::from_fn(|i| {
+                    input_buffer.get(i).map_or(&[][..], std::vec::Vec::as_slice)
+                });
+
+                // For output refs, we need mutable references, which is trickier
+                // We have to use a temporary vector here because:
+                // 1. array::from_fn doesn't work with mutable references (can't iterate mutably twice)
+                // 2. There's no safe way to create [&mut [T]; N] without unsafe or Vec
+                // This is a small allocation (8 bytes * channel_count) but unavoidable without unsafe
+                let mut output_refs_vec: Vec<&mut [Sample]> =
+                    output_buffer.iter_mut().map(Vec::as_mut_slice).collect();
+
+                // Use only the channels we need from the input array
+                let input_count = input_buffer.len().min(MAX_CHANNELS);
+                let input_refs = &input_refs_array[..input_count];
+
+                let mut audio_buffer = AudioBuffer {
+                    inputs: input_refs,
+                    outputs: &mut output_refs_vec,
+                    frames: self.block_size,
+                };
+
+                // Process (errors ignored - real-time safe, silence on error)
+                let _ = node.plugin.process(&mut audio_buffer, &event_buffer);
+            }
+        }
+
+        // Route outputs: mix all output nodes (no outgoing connections) to system_output
+        // Clear system output first
+        for channel in system_output.iter_mut() {
+            channel.fill(0.0);
+        }
+
+        for &node_id in &self.processing_order {
+            // Check if this node is an output node (no outgoing connections)
+            // NOTE: Clippy suggests collapsing this with let-chains syntax, but that's unstable
+            #[allow(clippy::collapsible_if)]
+            if !outgoing.contains(&node_id) {
+                if let Some(node_output) = self.node_buffers.get(&node_id) {
+                    // Mix this output node to system_output (additive)
+                    for (sys_ch, node_ch) in system_output.iter_mut().zip(node_output.iter()) {
+                        let len = sys_ch.len().min(node_ch.len());
+                        for i in 0..len {
+                            sys_ch[i] += node_ch[i];
+                        }
+                    }
+                }
             }
         }
     }
@@ -918,5 +1102,448 @@ mod tests {
             "Topological sort took {}ms (expected < 100ms)",
             sort_time.as_millis()
         );
+    }
+
+    // ============================================================================
+    // Connection-Based Routing Tests (Checkpoint 2)
+    // ============================================================================
+
+    #[test]
+    fn test_single_node_passthrough() {
+        // Test: system_input -> node -> system_output
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let _node = graph
+            .add_node(Box::new(DummyPlugin::new("PassThrough", 2, 2)))
+            .unwrap();
+
+        // Create test input
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create output buffer
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        // Process
+        graph.process(&input_refs, &mut output_refs);
+
+        // Verify: output should equal input (pass-through)
+        assert_eq!(output_data[0][0], 1.0);
+        assert_eq!(output_data[1][0], 2.0);
+    }
+
+    #[test]
+    fn test_linear_chain_routing() {
+        // Test: system_input -> A -> B -> C -> system_output
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_b, node_c).unwrap();
+
+        // Create test input
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create output buffer
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        // Process
+        graph.process(&input_refs, &mut output_refs);
+
+        // Verify: all nodes pass through, so output should equal input
+        assert_eq!(output_data[0][0], 1.0);
+        assert_eq!(output_data[1][0], 2.0);
+    }
+
+    #[test]
+    fn test_input_mixing() {
+        // Test: A -> C
+        //       B -> C
+        // Both A and B outputs should be mixed (summed) into C's input
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_c).unwrap();
+        graph.connect(node_b, node_c).unwrap();
+
+        // Create test input: different values for each input node
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // A and B both receive system_input and pass through
+        // C receives A + B mixed, so should be 2.0 + 4.0 = 2.0 (A) + 2.0 (B)
+        // Actually: A gets [1.0, 2.0], B gets [1.0, 2.0], C gets sum = [2.0, 4.0]
+        assert_eq!(output_data[0][0], 2.0); // 1.0 + 1.0
+        assert_eq!(output_data[1][0], 4.0); // 2.0 + 2.0
+    }
+
+    #[test]
+    fn test_parallel_paths() {
+        // Test: A -> B
+        //       A -> C
+        // A's output should be routed to both B and C
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_a, node_c).unwrap();
+
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // B and C are both output nodes (no outgoing connections)
+        // Both receive A's output, so system_output gets B + C mixed
+        // Each gets [1.0, 2.0] from A, so sum = [2.0, 4.0]
+        assert_eq!(output_data[0][0], 2.0);
+        assert_eq!(output_data[1][0], 4.0);
+    }
+
+    #[test]
+    fn test_diamond_pattern() {
+        // Test:     A
+        //          / \
+        //         B   C
+        //          \ /
+        //           D
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .unwrap();
+        let node_d = graph
+            .add_node(Box::new(DummyPlugin::new("D", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_a, node_c).unwrap();
+        graph.connect(node_b, node_d).unwrap();
+        graph.connect(node_c, node_d).unwrap();
+
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // A gets [1.0, 2.0]
+        // B gets A's output: [1.0, 2.0]
+        // C gets A's output: [1.0, 2.0]
+        // D gets B + C mixed: [2.0, 4.0]
+        // system_output gets D: [2.0, 4.0]
+        assert_eq!(output_data[0][0], 2.0);
+        assert_eq!(output_data[1][0], 4.0);
+    }
+
+    #[test]
+    fn test_disconnected_nodes_output() {
+        // Test: A (disconnected), B (disconnected)
+        // Both should output to system_output (mixed)
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let _node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let _node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // Both A and B get system_input and pass through
+        // Both are output nodes, so mixed to system_output: [2.0, 4.0]
+        assert_eq!(output_data[0][0], 2.0);
+        assert_eq!(output_data[1][0], 4.0);
+    }
+
+    #[test]
+    fn test_no_output_nodes() {
+        // Test: A -> B (cycle, but fallback to linear order)
+        //       Both have outgoing connections, so no output to system
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+        graph.connect(node_b, node_a).unwrap(); // Cycle
+
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // Both nodes have outgoing connections, so neither is an output node
+        // system_output should be silence
+        assert_eq!(output_data[0][0], 0.0);
+        assert_eq!(output_data[1][0], 0.0);
+    }
+
+    // ============================================================================
+    // Channel Mismatch Tests
+    // ============================================================================
+
+    #[test]
+    fn test_channel_mismatch_fewer_system_input_channels() {
+        // Test: 1-channel system_input -> 2-channel node
+        // Second channel should be silent (not panic)
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let _node = graph
+            .add_node(Box::new(DummyPlugin::new("StereoNode", 2, 2)))
+            .unwrap();
+
+        // Create 1-channel input
+        let input_data = [vec![1.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create 2-channel output
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // First channel should have input signal
+        assert_eq!(output_data[0][0], 1.0);
+        // Second channel should be silence (no input available)
+        assert_eq!(output_data[1][0], 0.0);
+    }
+
+    #[test]
+    fn test_channel_mismatch_more_system_input_channels() {
+        // Test: 4-channel system_input -> 2-channel node
+        // Node should only see first 2 channels
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let _node = graph
+            .add_node(Box::new(DummyPlugin::new("StereoNode", 2, 2)))
+            .unwrap();
+
+        // Create 4-channel input
+        let input_data = [
+            vec![1.0_f32; 64],
+            vec![2.0_f32; 64],
+            vec![3.0_f32; 64],
+            vec![4.0_f32; 64],
+        ];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create 2-channel output
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // Should only output first 2 channels
+        assert_eq!(output_data[0][0], 1.0);
+        assert_eq!(output_data[1][0], 2.0);
+    }
+
+    #[test]
+    fn test_channel_mismatch_fewer_system_output_channels() {
+        // Test: 4-channel node -> 2-channel system_output
+        // Only first 2 channels should be written
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let _node = graph
+            .add_node(Box::new(DummyPlugin::new("QuadNode", 4, 4)))
+            .unwrap();
+
+        // Create 4-channel input
+        let input_data = [
+            vec![1.0_f32; 64],
+            vec![2.0_f32; 64],
+            vec![3.0_f32; 64],
+            vec![4.0_f32; 64],
+        ];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create 2-channel output (smaller than node's output)
+        let mut output_data = [vec![0.0_f32; 64], vec![0.0_f32; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // First 2 channels should be written
+        assert_eq!(output_data[0][0], 1.0);
+        assert_eq!(output_data[1][0], 2.0);
+        // Channels 3 and 4 are discarded (no space in system_output)
+    }
+
+    #[test]
+    fn test_channel_mismatch_more_system_output_channels() {
+        // Test: 1-channel node -> 4-channel system_output
+        // Only first channel should have signal
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let _node = graph
+            .add_node(Box::new(DummyPlugin::new("MonoNode", 1, 1)))
+            .unwrap();
+
+        // Create 1-channel input
+        let input_data = [vec![1.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create 4-channel output (larger than node's output)
+        let mut output_data = [
+            vec![0.0_f32; 64],
+            vec![0.0_f32; 64],
+            vec![0.0_f32; 64],
+            vec![0.0_f32; 64],
+        ];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // First channel should have signal
+        assert_eq!(output_data[0][0], 1.0);
+        // Other channels should be silence
+        assert_eq!(output_data[1][0], 0.0);
+        assert_eq!(output_data[2][0], 0.0);
+        assert_eq!(output_data[3][0], 0.0);
+    }
+
+    #[test]
+    fn test_channel_mismatch_connected_nodes() {
+        // Test: 2-channel node A -> 4-channel node B
+        // Node B should receive signal on first 2 channels, silence on others
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("StereoNode", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("QuadNode", 4, 4)))
+            .unwrap();
+
+        graph.connect(node_a, node_b).unwrap();
+
+        // Create 2-channel input
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create 4-channel output
+        let mut output_data = [
+            vec![0.0_f32; 64],
+            vec![0.0_f32; 64],
+            vec![0.0_f32; 64],
+            vec![0.0_f32; 64],
+        ];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // Node B receives 2 channels from A, outputs 4 channels
+        // First 2 channels should have signal (1.0, 2.0)
+        assert_eq!(output_data[0][0], 1.0);
+        assert_eq!(output_data[1][0], 2.0);
+        // Last 2 channels should be silence (no input)
+        assert_eq!(output_data[2][0], 0.0);
+        assert_eq!(output_data[3][0], 0.0);
+    }
+
+    #[test]
+    fn test_channel_mismatch_mixing_different_channel_counts() {
+        // Test: 2-channel node A -> node C (4-channel)
+        //       1-channel node B -> node C (4-channel)
+        // Both A and B are input nodes (no incoming connections), so they both receive system_input
+        let mut graph = AudioGraph::with_config(48000, 64);
+        let node_a = graph
+            .add_node(Box::new(DummyPlugin::new("StereoNode", 2, 2)))
+            .unwrap();
+        let node_b = graph
+            .add_node(Box::new(DummyPlugin::new("MonoNode", 1, 1)))
+            .unwrap();
+        let node_c = graph
+            .add_node(Box::new(DummyPlugin::new("QuadNode", 4, 4)))
+            .unwrap();
+
+        graph.connect(node_a, node_c).unwrap();
+        graph.connect(node_b, node_c).unwrap();
+
+        // Create 2-channel input (A gets both channels, B gets only channel 0)
+        let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
+        let input_refs: Vec<&[f32]> = input_data.iter().map(Vec::as_slice).collect();
+
+        // Create 4-channel output
+        let mut output_data = [
+            vec![0.0_f32; 64],
+            vec![0.0_f32; 64],
+            vec![0.0_f32; 64],
+            vec![0.0_f32; 64],
+        ];
+        let mut output_refs: Vec<&mut [f32]> =
+            output_data.iter_mut().map(Vec::as_mut_slice).collect();
+
+        graph.process(&input_refs, &mut output_refs);
+
+        // Node C receives:
+        // - From A (2-channel): [1.0, 2.0] on channels 0-1
+        // - From B (1-channel): [1.0] on channel 0 (both A and B get system_input channel 0)
+        // Result: [1.0+1.0, 2.0, 0.0, 0.0] = [2.0, 2.0, 0.0, 0.0]
+        assert_eq!(output_data[0][0], 2.0);
+        assert_eq!(output_data[1][0], 2.0);
+        assert_eq!(output_data[2][0], 0.0);
+        assert_eq!(output_data[3][0], 0.0);
     }
 }
