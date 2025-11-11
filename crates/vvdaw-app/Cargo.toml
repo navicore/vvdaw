@@ -17,6 +17,14 @@ workspace = true
 name = "vvdaw"
 path = "src/main.rs"
 
+[[bin]]
+name = "vvdaw-process"
+path = "src/bin/process.rs"
+
+[[bin]]
+name = "generate-test-wav"
+path = "src/bin/generate-test-wav.rs"
+
 [dependencies]
 vvdaw-core.workspace = true
 vvdaw-audio.workspace = true
@@ -28,3 +36,5 @@ vvdaw-ui.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+clap.workspace = true
+hound.workspace = true
