@@ -454,6 +454,97 @@ pub unsafe fn release_interface(this: *mut c_void) {
     }
 }
 
+/// Function pointer type for `IComponent::getControllerClassId`
+///
+/// Gets the class ID of the associated edit controller.
+type ComponentGetControllerClassIdFn =
+    unsafe extern "C" fn(this: *mut c_void, class_id: *mut [u8; 16]) -> TResult;
+
+/// Call `IComponent::getControllerClassId(classId)`
+///
+/// Returns the class ID (TUID) of the edit controller associated with this component.
+/// Returns an empty/zero TUID if the component doesn't have a separate edit controller.
+///
+/// # Safety
+///
+/// The `component` pointer must be valid and point to a valid `IComponent` interface.
+#[allow(unsafe_code)]
+pub unsafe fn component_get_controller_class_id(
+    component: *mut c_void,
+) -> Result<[u8; 16], PluginError> {
+    unsafe {
+        let mut class_id = [0u8; 16];
+
+        // Get the vtable pointer
+        let vtable_ptr = *(component.cast::<*const *const c_void>());
+
+        // IComponent vtable layout:
+        // [0-2] FUnknown: queryInterface, addRef, release
+        // [3] IPluginBase: initialize
+        // [4] IPluginBase: terminate
+        // [5] IComponent: getControllerClassId
+        let get_controller_class_id_ptr = *vtable_ptr.add(5);
+        let get_controller_class_id_fn: ComponentGetControllerClassIdFn =
+            std::mem::transmute(get_controller_class_id_ptr);
+
+        // Call getControllerClassId
+        let result = get_controller_class_id_fn(component, &raw mut class_id);
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IComponent::getControllerClassId failed with result: {result}"
+            )));
+        }
+
+        Ok(class_id)
+    }
+}
+
+/// Function pointer type for `IComponent::getState`
+///
+/// Gets the current component state.
+type ComponentGetStateFn = unsafe extern "C" fn(this: *mut c_void, state: *mut c_void) -> TResult;
+
+/// Call `IComponent::getState(state)`
+///
+/// Stores the complete component state into the provided stream.
+///
+/// # Safety
+///
+/// The `component` pointer must be valid and point to a valid `IComponent` interface.
+/// The `state_stream` pointer must be a valid IBStream interface.
+#[allow(unsafe_code)]
+pub unsafe fn component_get_state(
+    component: *mut c_void,
+    state_stream: *mut c_void,
+) -> Result<(), PluginError> {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(component.cast::<*const *const c_void>());
+
+        // IComponent vtable layout:
+        // [0-2] FUnknown: queryInterface, addRef, release
+        // [3-4] IPluginBase: initialize, terminate
+        // [5-11] IComponent: getControllerClassId, setIoMode, getBusCount, getBusInfo,
+        //                    getRoutingInfo, activateBus, setActive
+        // [12] IComponent: setState
+        // [13] IComponent: getState
+        let get_state_ptr = *vtable_ptr.add(13);
+        let get_state_fn: ComponentGetStateFn = std::mem::transmute(get_state_ptr);
+
+        // Call getState
+        let result = get_state_fn(component, state_stream);
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IComponent::getState failed with result: {result}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
 /// Call `IComponent::initialize(context)`
 ///
 /// # Safety
@@ -731,6 +822,51 @@ type EditControllerGetParamValueByStringFn = unsafe extern "C" fn(
     string: *const i16,         // TChar* (UTF-16)
     value_normalized: *mut f64, // Output parameter
 ) -> TResult;
+
+/// Function pointer type for `IEditController::setComponentState`
+///
+/// Sets the component state for the edit controller.
+type EditControllerSetComponentStateFn =
+    unsafe extern "C" fn(this: *mut c_void, state: *mut c_void) -> TResult;
+
+/// Call `IEditController::setComponentState(state)`
+///
+/// Receives the current component state (called after component initialization).
+/// This synchronizes the edit controller with the component's state.
+///
+/// # Safety
+///
+/// The `edit_controller` pointer must be valid and point to a valid `IEditController` interface.
+/// The `state_stream` pointer must be valid IBStream interface or null.
+#[allow(unsafe_code)]
+pub unsafe fn edit_controller_set_component_state(
+    edit_controller: *mut c_void,
+    state_stream: *mut c_void,
+) -> Result<(), PluginError> {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(edit_controller.cast::<*const *const c_void>());
+
+        // IEditController vtable layout:
+        // [0-2] FUnknown: queryInterface, addRef, release
+        // [3-4] IPluginBase: initialize, terminate
+        // [5] IEditController: setComponentState
+        let set_component_state_ptr = *vtable_ptr.add(5);
+        let set_component_state_fn: EditControllerSetComponentStateFn =
+            std::mem::transmute(set_component_state_ptr);
+
+        // Call setComponentState
+        let result = set_component_state_fn(edit_controller, state_stream);
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IEditController::setComponentState failed with result: {result}"
+            )));
+        }
+
+        Ok(())
+    }
+}
 
 /// Call `IEditController::getParameterCount()`
 ///

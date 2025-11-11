@@ -127,13 +127,16 @@ impl Vst3Loader {
         };
         tracing::debug!("IAudioProcessor obtained at {:?}", processor_ptr);
 
-        // Step 8: Query for IEditController interface (for parameters)
-        // Many VST3 plugins implement IEditController on the same object as IComponent
-        tracing::debug!("Querying for IEditController interface...");
+        // Step 8: Get edit controller (for parameters)
+        // Try two approaches:
+        // 1. Query IEditController directly (simple plugins)
+        // 2. Create separate edit controller via class ID (commercial plugins)
+        tracing::debug!("Obtaining edit controller...");
         let edit_controller_ptr = unsafe {
+            // Approach 1: Try querying IEditController directly on component
             match crate::com::query_interface(component_ptr, &crate::com::IEDIT_CONTROLLER_IID) {
                 Ok(ptr) => {
-                    tracing::debug!("IEditController obtained at {:?}", ptr);
+                    tracing::info!("Edit controller is implemented on component (simple plugin)");
 
                     // Initialize the edit controller immediately to make parameters available
                     match crate::com::component_initialize(ptr, std::ptr::null_mut()) {
@@ -150,14 +153,69 @@ impl Vst3Loader {
 
                     Some(ptr)
                 }
-                Err(e) => {
-                    // IEditController is optional - some plugins may not expose it directly
-                    // Most commercial VST3 plugins use separate edit controllers
-                    tracing::debug!(
-                        "IEditController query failed: {} (will try separate controller)",
-                        e
-                    );
-                    None
+                Err(_) => {
+                    // Approach 2: Query for separate controller class ID
+                    tracing::debug!("Component doesn't implement IEditController directly");
+                    tracing::debug!("Querying for separate controller class ID...");
+
+                    match crate::com::component_get_controller_class_id(component_ptr) {
+                        Ok(controller_class_id) => {
+                            // Check if class ID is non-zero (zero means no controller)
+                            if controller_class_id.iter().any(|&b| b != 0) {
+                                eprintln!("DEBUG: Found separate controller class ID: {:?}", controller_class_id);
+                                tracing::info!(
+                                    "Component has separate controller class ID: {:?}",
+                                    controller_class_id
+                                );
+
+                                // Create separate edit controller instance
+                                match factory.create_instance(&controller_class_id, &crate::com::IEDIT_CONTROLLER_IID) {
+                                    Ok(controller_ptr) => {
+                                        eprintln!("DEBUG: Created separate edit controller at {:?}", controller_ptr);
+                                        tracing::info!("Created separate edit controller at {:?}", controller_ptr);
+
+                                        // Initialize the edit controller
+                                        match crate::com::component_initialize(controller_ptr, std::ptr::null_mut()) {
+                                            Ok(()) => {
+                                                tracing::debug!("Edit controller initialized");
+
+                                                // Synchronize controller with component state
+                                                // For now, pass null - many plugins work without state transfer
+                                                match crate::com::edit_controller_set_component_state(controller_ptr, std::ptr::null_mut()) {
+                                                    Ok(()) => {
+                                                        eprintln!("DEBUG: setComponentState(null) succeeded");
+                                                        tracing::debug!("Edit controller state synchronized");
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("DEBUG: setComponentState(null) failed: {}", e);
+                                                        tracing::debug!("State synchronization not required: {}", e);
+                                                    }
+                                                }
+
+                                                Some(controller_ptr)
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("Failed to initialize edit controller: {}", e);
+                                                crate::com::release_interface(controller_ptr);
+                                                None
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to create separate edit controller: {}", e);
+                                        None
+                                    }
+                                }
+                            } else {
+                                tracing::debug!("Plugin has no edit controller (class ID is zero)");
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to get controller class ID: {}", e);
+                            None
+                        }
+                    }
                 }
             }
         };
