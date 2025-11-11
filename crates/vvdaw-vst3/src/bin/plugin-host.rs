@@ -236,6 +236,17 @@ fn handle_control_message(
                 .map_err(|e| format!("Failed to get parameter: {e}"))?;
             Ok(Some(ResponseMessage::ParameterValue { id: *id, value }))
         }
+
+        ControlMessage::GetParameters => {
+            let params = plugin
+                .lock()
+                .map_err(|e| format!("Plugin lock poisoned: {e}"))?
+                .parameters();
+
+            // Convert to serializable format
+            let parameters: Vec<_> = params.into_iter().map(Into::into).collect();
+            Ok(Some(ResponseMessage::Parameters { parameters }))
+        }
     }
 }
 

@@ -103,6 +103,9 @@ pub struct MultiProcessPlugin {
 
     /// Output channel count
     output_channels: ChannelCount,
+
+    /// Cached parameter list (queried once at startup)
+    cached_parameters: Vec<ParameterInfo>,
 }
 
 impl MultiProcessPlugin {
@@ -110,18 +113,20 @@ impl MultiProcessPlugin {
     ///
     /// This creates the subprocess, sets up shared memory, and waits for
     /// the plugin to signal it's ready.
+    #[allow(clippy::too_many_lines)]
     pub fn spawn(plugin_path: impl AsRef<std::path::Path>) -> Result<Self, PluginError> {
         let plugin_path = plugin_path.as_ref().to_string_lossy().to_string();
 
         // Generate unique shared memory name using PID + counter + timestamp
-        // This prevents collisions even if process restarts and reuses PID
+        // IMPORTANT: macOS/BSD limit shared memory names to ~31 characters
+        // Format: /vvdaw_{pid}_{inst}_{ts} where ts is lower 32 bits of nanos
         let instance_id = INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
+            .map(|d| (d.as_nanos() & 0xFFFF_FFFF) as u32) // Lower 32 bits only
             .unwrap_or(0);
         let shm_name = format!(
-            "/vvdaw_shm_{}_{}_{:x}",
+            "/vvdaw_{}_{}_{:x}",
             std::process::id(),
             instance_id,
             timestamp
@@ -197,6 +202,7 @@ impl MultiProcessPlugin {
             max_block_size: 0,
             input_channels: 0,
             output_channels: 0,
+            cached_parameters: Vec::new(),
         };
 
         // Wait for Ready message
@@ -206,6 +212,29 @@ impl MultiProcessPlugin {
                 // TODO: Get channel counts from plugin info
                 plugin.input_channels = 2;
                 plugin.output_channels = 2;
+
+                // Query parameters from subprocess
+                tracing::debug!("Querying plugin parameters...");
+                plugin.send_message(&ControlMessage::GetParameters)?;
+                match plugin.wait_for_response()? {
+                    ResponseMessage::Parameters { parameters } => {
+                        plugin.cached_parameters = parameters.into_iter().map(Into::into).collect();
+                        tracing::info!(
+                            "Plugin '{}' has {} parameters",
+                            plugin.info.name,
+                            plugin.cached_parameters.len()
+                        );
+                    }
+                    ResponseMessage::Error { message } => {
+                        tracing::warn!("Failed to query parameters: {}", message);
+                        // Continue anyway - plugin may not have parameters
+                    }
+                    _ => {
+                        tracing::warn!("Unexpected response to GetParameters");
+                        // Continue anyway
+                    }
+                }
+
                 Ok(plugin)
             }
             ResponseMessage::Error { message } => Err(PluginError::InitializationFailed(format!(
@@ -454,9 +483,7 @@ impl Plugin for MultiProcessPlugin {
     }
 
     fn parameters(&self) -> Vec<ParameterInfo> {
-        // Not implemented - would require querying subprocess at construction time
-        // This could be cached from the Ready message in the future
-        Vec::new()
+        self.cached_parameters.clone()
     }
 
     fn input_channels(&self) -> ChannelCount {
