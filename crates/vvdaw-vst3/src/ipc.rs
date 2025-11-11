@@ -90,6 +90,9 @@ pub enum ControlMessage {
 
     /// Get current parameter value
     GetParameter { id: u32 },
+
+    /// Get all available parameters
+    GetParameters,
 }
 
 /// Response messages sent from plugin subprocess to main process
@@ -110,8 +113,47 @@ pub enum ResponseMessage {
     /// Parameter value response
     ParameterValue { id: u32, value: f32 },
 
+    /// All parameters response
+    Parameters {
+        parameters: Vec<SerializableParameterInfo>,
+    },
+
     /// Error occurred
     Error { message: String },
+}
+
+/// Serializable version of `ParameterInfo` for IPC
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableParameterInfo {
+    pub id: u32,
+    pub name: String,
+    pub min_value: f32,
+    pub max_value: f32,
+    pub default_value: f32,
+}
+
+impl From<vvdaw_plugin::ParameterInfo> for SerializableParameterInfo {
+    fn from(info: vvdaw_plugin::ParameterInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            min_value: info.min_value,
+            max_value: info.max_value,
+            default_value: info.default_value,
+        }
+    }
+}
+
+impl From<SerializableParameterInfo> for vvdaw_plugin::ParameterInfo {
+    fn from(info: SerializableParameterInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            min_value: info.min_value,
+            max_value: info.max_value,
+            default_value: info.default_value,
+        }
+    }
 }
 
 /// Atomic state flags for process synchronization

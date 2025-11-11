@@ -127,7 +127,42 @@ impl Vst3Loader {
         };
         tracing::debug!("IAudioProcessor obtained at {:?}", processor_ptr);
 
-        // Step 8: Create the plugin wrapper with COM pointers
+        // Step 8: Query for IEditController interface (for parameters)
+        // Many VST3 plugins implement IEditController on the same object as IComponent
+        tracing::debug!("Querying for IEditController interface...");
+        let edit_controller_ptr = unsafe {
+            match crate::com::query_interface(component_ptr, &crate::com::IEDIT_CONTROLLER_IID) {
+                Ok(ptr) => {
+                    tracing::debug!("IEditController obtained at {:?}", ptr);
+
+                    // Initialize the edit controller immediately to make parameters available
+                    match crate::com::component_initialize(ptr, std::ptr::null_mut()) {
+                        Ok(()) => {
+                            tracing::debug!("IEditController::initialize succeeded");
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "IEditController::initialize failed: {} (parameters may not be available)",
+                                e
+                            );
+                        }
+                    }
+
+                    Some(ptr)
+                }
+                Err(e) => {
+                    // IEditController is optional - some plugins may not expose it directly
+                    // Most commercial VST3 plugins use separate edit controllers
+                    tracing::debug!(
+                        "IEditController query failed: {} (will try separate controller)",
+                        e
+                    );
+                    None
+                }
+            }
+        };
+
+        // Step 9: Create the plugin wrapper with COM pointers
         let info = PluginInfo {
             name: class_info.name.clone(),
             vendor: "Unknown".to_string(), // TODO: Get from factory info
@@ -141,6 +176,7 @@ impl Vst3Loader {
             factory,
             component_ptr,
             processor_ptr,
+            edit_controller_ptr,
         ))
     }
 

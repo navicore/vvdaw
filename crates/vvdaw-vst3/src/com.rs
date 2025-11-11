@@ -41,6 +41,13 @@ pub const IAUDIO_PROCESSOR_IID: [u8; 16] = [
     0x42, 0x04, 0x3F, 0x99, 0xB7, 0xDA, 0x45, 0x3C, 0xA5, 0x69, 0xE7, 0x9D, 0x9A, 0xAE, 0xC3, 0x3D,
 ];
 
+/// `IEditController` interface ID (IID)
+/// FUID: DCD7BBE3-7742-448D-A874-AACC979C759E
+/// From VST3 SDK: `DECLARE_CLASS_IID` (`IEditController`, 0xDCD7BBE3, 0x7742448D, 0xA874AACC, 0x979C759E)
+pub const IEDIT_CONTROLLER_IID: [u8; 16] = [
+    0xDC, 0xD7, 0xBB, 0xE3, 0x77, 0x42, 0x44, 0x8D, 0xA8, 0x74, 0xAA, 0xCC, 0x97, 0x9C, 0x75, 0x9E,
+];
+
 /// Function pointer type for `IPluginFactory::countClasses`
 ///
 /// Returns the number of classes exported by this factory.
@@ -674,6 +681,117 @@ pub unsafe fn processor_process(
         }
 
         Ok(())
+    }
+}
+
+/// Function pointer type for `IEditController::getParameterCount`
+///
+/// Returns the number of parameters exposed by the controller.
+type EditControllerGetParameterCountFn = unsafe extern "C" fn(this: *mut c_void) -> i32;
+
+/// VST3 `ParameterInfo` structure
+///
+/// Contains information about a single parameter.
+#[repr(C)]
+pub struct ParameterInfo {
+    pub id: u32,                       // Unique parameter ID
+    pub title: [u16; 128],             // Parameter title (UTF-16)
+    pub short_title: [u16; 128],       // Short title (UTF-16)
+    pub units: [u16; 128],             // Units string (UTF-16)
+    pub step_count: i32,               // Number of discrete steps (0 = continuous)
+    pub default_normalized_value: f64, // Default value [0.0, 1.0]
+    pub unit_id: i32,                  // Associated unit ID
+    pub flags: i32,                    // ParameterFlags
+}
+
+/// Function pointer type for `IEditController::getParameterInfo`
+///
+/// Fills a `ParameterInfo` structure with information about the parameter at the specified index.
+type EditControllerGetParameterInfoFn =
+    unsafe extern "C" fn(this: *mut c_void, param_index: i32, info: *mut ParameterInfo) -> TResult;
+
+/// Function pointer type for `IEditController::getParamStringByValue`
+///
+/// Converts a normalized value to a string representation.
+#[allow(dead_code)] // Will be used for parameter display
+type EditControllerGetParamStringByValueFn = unsafe extern "C" fn(
+    this: *mut c_void,
+    id: u32,
+    value_normalized: f64,
+    string: *mut i16, // TChar* (UTF-16 buffer)
+) -> TResult;
+
+/// Function pointer type for `IEditController::getParamValueByString`
+///
+/// Converts a string to a normalized value.
+#[allow(dead_code)] // Will be used for parameter parsing
+type EditControllerGetParamValueByStringFn = unsafe extern "C" fn(
+    this: *mut c_void,
+    id: u32,
+    string: *const i16,         // TChar* (UTF-16)
+    value_normalized: *mut f64, // Output parameter
+) -> TResult;
+
+/// Call `IEditController::getParameterCount()`
+///
+/// # Safety
+///
+/// The `edit_controller` pointer must be valid and point to a valid `IEditController` interface.
+#[allow(unsafe_code)]
+pub unsafe fn edit_controller_get_parameter_count(edit_controller: *mut c_void) -> i32 {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(edit_controller.cast::<*const *const c_void>());
+
+        // IEditController vtable layout:
+        // [0-2] FUnknown: queryInterface, addRef, release
+        // [3-4] IPluginBase: initialize, terminate
+        // [5] IEditController: setComponentState
+        // [6] IEditController: setState
+        // [7] IEditController: getState
+        // [8] IEditController: getParameterCount
+        let get_parameter_count_ptr = *vtable_ptr.add(8);
+        let get_parameter_count_fn: EditControllerGetParameterCountFn =
+            std::mem::transmute(get_parameter_count_ptr);
+
+        // Call getParameterCount
+        get_parameter_count_fn(edit_controller)
+    }
+}
+
+/// Call `IEditController::getParameterInfo(paramIndex, info)`
+///
+/// # Safety
+///
+/// The `edit_controller` pointer must be valid and point to a valid `IEditController` interface.
+/// The `info` pointer must point to valid memory for a `ParameterInfo` struct.
+#[allow(unsafe_code)]
+pub unsafe fn edit_controller_get_parameter_info(
+    edit_controller: *mut c_void,
+    param_index: i32,
+) -> Result<ParameterInfo, PluginError> {
+    unsafe {
+        // Allocate space for the result
+        let mut param_info: ParameterInfo = std::mem::zeroed();
+
+        // Get the vtable pointer
+        let vtable_ptr = *(edit_controller.cast::<*const *const c_void>());
+
+        // getParameterInfo is at vtable[9]
+        let get_parameter_info_ptr = *vtable_ptr.add(9);
+        let get_parameter_info_fn: EditControllerGetParameterInfoFn =
+            std::mem::transmute(get_parameter_info_ptr);
+
+        // Call getParameterInfo
+        let result = get_parameter_info_fn(edit_controller, param_index, &raw mut param_info);
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IEditController::getParameterInfo failed with result: {result}"
+            )));
+        }
+
+        Ok(param_info)
     }
 }
 

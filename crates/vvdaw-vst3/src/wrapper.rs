@@ -24,7 +24,7 @@ pub struct Vst3Plugin {
     // COM interface pointers
     component: *mut std::ffi::c_void,
     processor: *mut std::ffi::c_void,
-    // TODO: Add edit_controller when needed
+    edit_controller: Option<*mut std::ffi::c_void>,
 
     // Audio configuration
     sample_rate: SampleRate,
@@ -62,6 +62,7 @@ impl Vst3Plugin {
         factory: PluginFactory,
         component: *mut std::ffi::c_void,
         processor: *mut std::ffi::c_void,
+        edit_controller: Option<*mut std::ffi::c_void>,
     ) -> Self {
         // Pre-allocate channel pointer vectors (will be resized during initialization)
         let input_channels = 2;
@@ -73,6 +74,7 @@ impl Vst3Plugin {
             factory,
             component,
             processor,
+            edit_controller,
             sample_rate: 48000,
             block_size: 512,
             input_channels,
@@ -126,6 +128,21 @@ impl Plugin for Vst3Plugin {
             // Pass null context for now (TODO: implement proper host context)
             crate::com::component_initialize(self.component, std::ptr::null_mut())?;
             tracing::debug!("IComponent::initialize succeeded");
+
+            // Step 1a: Initialize the edit controller if available
+            if let Some(edit_controller) = self.edit_controller {
+                match crate::com::component_initialize(edit_controller, std::ptr::null_mut()) {
+                    Ok(()) => {
+                        tracing::debug!("IEditController::initialize succeeded");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "IEditController::initialize failed: {} (continuing anyway)",
+                            e
+                        );
+                    }
+                }
+            }
 
             // Step 2: Set up audio processing parameters
             let process_setup = crate::com::ProcessSetup {
@@ -326,13 +343,54 @@ impl Plugin for Vst3Plugin {
         Ok(0.0)
     }
 
+    #[allow(unsafe_code)] // Required for FFI calls
     fn parameters(&self) -> Vec<ParameterInfo> {
-        // TODO: Query VST3 parameters
-        // 1. Get parameter count from edit_controller
-        // 2. For each parameter, get ParameterInfo
-        // 3. Convert to our ParameterInfo format
+        // If no edit controller, return empty list
+        let Some(edit_controller) = self.edit_controller else {
+            tracing::debug!("No IEditController interface - plugin has no parameters");
+            return Vec::new();
+        };
 
-        Vec::new()
+        unsafe {
+            // Get parameter count
+            let param_count = crate::com::edit_controller_get_parameter_count(edit_controller);
+            tracing::debug!("Plugin has {} parameters", param_count);
+
+            if param_count <= 0 {
+                return Vec::new();
+            }
+
+            let mut parameters = Vec::with_capacity(param_count as usize);
+
+            for i in 0..param_count {
+                match crate::com::edit_controller_get_parameter_info(edit_controller, i) {
+                    Ok(vst3_param_info) => {
+                        // Convert UTF-16 title to Rust string
+                        let name = String::from_utf16_lossy(&vst3_param_info.title)
+                            .trim_end_matches('\0')
+                            .to_string();
+
+                        // VST3 parameters are normalized to [0.0, 1.0]
+                        // For now, we'll use that range directly
+                        // TODO: Handle step_count for discrete parameters
+                        let param_info = ParameterInfo {
+                            id: vst3_param_info.id,
+                            name,
+                            min_value: 0.0,
+                            max_value: 1.0,
+                            default_value: vst3_param_info.default_normalized_value as f32,
+                        };
+
+                        parameters.push(param_info);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to get parameter info for index {}: {}", i, e);
+                    }
+                }
+            }
+
+            parameters
+        }
     }
 
     fn input_channels(&self) -> ChannelCount {
