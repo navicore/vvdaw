@@ -503,7 +503,6 @@ pub unsafe fn component_get_controller_class_id(
 /// Function pointer type for `IComponent::getState`
 ///
 /// Gets the current component state.
-#[allow(dead_code)] // TODO: Enable when state transfer is working
 type ComponentGetStateFn = unsafe extern "C" fn(this: *mut c_void, state: *mut c_void) -> TResult;
 
 /// Call `IComponent::getState(state)`
@@ -515,7 +514,6 @@ type ComponentGetStateFn = unsafe extern "C" fn(this: *mut c_void, state: *mut c
 /// The `component` pointer must be valid and point to a valid `IComponent` interface.
 /// The `state_stream` pointer must be a valid `IBStream` interface.
 #[allow(unsafe_code)]
-#[allow(dead_code)] // TODO: Enable when state transfer is working
 pub unsafe fn component_get_state(
     component: *mut c_void,
     state_stream: *mut c_void,
@@ -853,7 +851,6 @@ type EditControllerGetParamValueByStringFn = unsafe extern "C" fn(
 /// Function pointer type for `IEditController::setComponentState`
 ///
 /// Sets the component state for the edit controller.
-#[allow(dead_code)] // TODO: Enable when state transfer is working
 type EditControllerSetComponentStateFn =
     unsafe extern "C" fn(this: *mut c_void, state: *mut c_void) -> TResult;
 
@@ -867,7 +864,6 @@ type EditControllerSetComponentStateFn =
 /// The `edit_controller` pointer must be valid and point to a valid `IEditController` interface.
 /// The `state_stream` pointer must be valid `IBStream` interface or null.
 #[allow(unsafe_code)]
-#[allow(dead_code)] // TODO: Enable when state transfer is working
 pub unsafe fn edit_controller_set_component_state(
     edit_controller: *mut c_void,
     state_stream: *mut c_void,
@@ -885,7 +881,13 @@ pub unsafe fn edit_controller_set_component_state(
             std::mem::transmute(set_component_state_ptr);
 
         // Call setComponentState
+        tracing::debug!(
+            "Calling setComponentState({:?}, {:?}) via vtable offset 5",
+            edit_controller,
+            state_stream
+        );
         let result = set_component_state_fn(edit_controller, state_stream);
+        tracing::debug!("setComponentState returned: {}", result);
 
         if result != K_RESULT_OK {
             return Err(PluginError::FormatError(format!(

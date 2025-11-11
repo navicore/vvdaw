@@ -18,8 +18,6 @@
 //!
 //! See loader.rs for full state transfer status documentation.
 
-#![allow(dead_code)] // TODO: Enable when state transfer is working
-
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -161,13 +159,16 @@ unsafe extern "C" fn query_interface(
     obj: *mut *mut c_void,
 ) -> i32 {
     if this.is_null() || iid.is_null() || obj.is_null() {
+        tracing::warn!("stream::queryInterface - null pointer");
         return K_NO_INTERFACE;
     }
 
     let iid_bytes = unsafe { *iid };
+    tracing::debug!("stream::queryInterface called for IID: {:?}", iid_bytes);
 
     // Check if requesting IBStream or FUnknown (which IBStream extends)
     if iid_bytes == IBSTREAM_IID || iid_bytes == FUNKNOWN_IID {
+        tracing::debug!("  -> Returning stream (IBStream or FUnknown)");
         unsafe {
             *obj = this;
             let stream = &*(this.cast::<MemoryStream>());
@@ -175,6 +176,7 @@ unsafe extern "C" fn query_interface(
         }
         K_RESULT_OK
     } else {
+        tracing::debug!("  -> Interface not supported");
         unsafe {
             *obj = std::ptr::null_mut();
         }
@@ -185,24 +187,34 @@ unsafe extern "C" fn query_interface(
 #[allow(unsafe_code)]
 unsafe extern "C" fn add_ref(this: *mut c_void) -> u32 {
     if this.is_null() {
+        tracing::warn!("stream::addRef - null pointer");
         return 0;
     }
 
     let stream = unsafe { &*(this.cast::<MemoryStream>()) };
-    stream.ref_count.fetch_add(1, Ordering::Relaxed) + 1
+    let new_count = stream.ref_count.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::debug!("stream::addRef -> ref_count now {}", new_count);
+    new_count
 }
 
 #[allow(unsafe_code)]
 unsafe extern "C" fn release(this: *mut c_void) -> u32 {
     if this.is_null() {
+        tracing::warn!("stream::release - null pointer");
         return 0;
     }
 
     let stream = unsafe { &*(this.cast::<MemoryStream>()) };
     let old_count = stream.ref_count.fetch_sub(1, Ordering::Relaxed);
+    tracing::debug!(
+        "stream::release - ref_count was {}, now {}",
+        old_count,
+        old_count - 1
+    );
 
     if old_count == 1 {
         // Last reference - destroy the object
+        tracing::debug!("stream::release - dropping stream (last reference)");
         unsafe {
             drop(Box::from_raw(this.cast::<MemoryStream>()));
         }
@@ -221,6 +233,7 @@ unsafe extern "C" fn read(
     num_bytes_read: *mut i32,
 ) -> i32 {
     if this.is_null() || buffer.is_null() {
+        tracing::warn!("stream::read - null pointer");
         return K_RESULT_FALSE;
     }
 
@@ -228,6 +241,14 @@ unsafe extern "C" fn read(
     let to_read = num_bytes.max(0) as usize;
     let available = stream.data.len().saturating_sub(stream.position);
     let actual_read = to_read.min(available);
+
+    tracing::debug!(
+        "stream::read - requested: {}, available: {}, actual: {}, pos: {}",
+        to_read,
+        available,
+        actual_read,
+        stream.position
+    );
 
     if actual_read > 0 {
         unsafe {
