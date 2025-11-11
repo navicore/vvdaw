@@ -26,6 +26,7 @@ use std::env;
 use std::io::{self, BufRead, Write};
 use std::process;
 use std::sync::{Arc, Mutex};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use vvdaw_plugin::Plugin;
 use vvdaw_vst3::{ControlMessage, ProcessState, ResponseMessage, SharedAudioBuffer, SharedMemory};
 
@@ -37,6 +38,15 @@ unsafe impl Send for SendSharedBuffer {}
 
 #[allow(clippy::too_many_lines)]
 fn main() {
+    // Initialize tracing - respects RUST_LOG environment variable
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "vvdaw_vst3=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .init();
+
     // Set up panic handler to notify main process of crashes
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("PLUGIN CRASHED: {panic_info}");
