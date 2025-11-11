@@ -347,17 +347,13 @@ impl Plugin for Vst3Plugin {
     fn parameters(&self) -> Vec<ParameterInfo> {
         // If no edit controller, return empty list
         let Some(edit_controller) = self.edit_controller else {
-            eprintln!("DEBUG: wrapper::parameters() - No IEditController interface");
             tracing::debug!("No IEditController interface - plugin has no parameters");
             return Vec::new();
         };
 
-        eprintln!("DEBUG: wrapper::parameters() - Have IEditController at {:?}", edit_controller);
-
         unsafe {
             // Get parameter count
             let param_count = crate::com::edit_controller_get_parameter_count(edit_controller);
-            eprintln!("DEBUG: wrapper::parameters() - getParameterCount returned: {}", param_count);
             tracing::debug!("Plugin has {} parameters", param_count);
 
             if param_count <= 0 {

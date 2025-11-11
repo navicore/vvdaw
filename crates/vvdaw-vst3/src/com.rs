@@ -503,6 +503,7 @@ pub unsafe fn component_get_controller_class_id(
 /// Function pointer type for `IComponent::getState`
 ///
 /// Gets the current component state.
+#[allow(dead_code)] // TODO: Enable when state transfer is working
 type ComponentGetStateFn = unsafe extern "C" fn(this: *mut c_void, state: *mut c_void) -> TResult;
 
 /// Call `IComponent::getState(state)`
@@ -512,8 +513,9 @@ type ComponentGetStateFn = unsafe extern "C" fn(this: *mut c_void, state: *mut c
 /// # Safety
 ///
 /// The `component` pointer must be valid and point to a valid `IComponent` interface.
-/// The `state_stream` pointer must be a valid IBStream interface.
+/// The `state_stream` pointer must be a valid `IBStream` interface.
 #[allow(unsafe_code)]
+#[allow(dead_code)] // TODO: Enable when state transfer is working
 pub unsafe fn component_get_state(
     component: *mut c_void,
     state_stream: *mut c_void,
@@ -542,6 +544,31 @@ pub unsafe fn component_get_state(
         }
 
         Ok(())
+    }
+}
+
+/// Function pointer type for `IPluginBase::terminate`
+#[allow(dead_code)] // TODO: Enable when state transfer is working
+type ComponentTerminateFn = unsafe extern "C" fn(this: *mut c_void) -> TResult;
+
+/// Call `IComponent::terminate()`
+///
+/// # Safety
+///
+/// The `component` pointer must be valid and point to a valid `IComponent` interface.
+#[allow(unsafe_code)]
+#[allow(dead_code)] // TODO: Enable when state transfer is working
+pub unsafe fn component_terminate(component: *mut c_void) {
+    unsafe {
+        // Get the vtable pointer
+        let vtable_ptr = *(component.cast::<*const *const c_void>());
+
+        // terminate is at vtable[4] (after queryInterface, addRef, release, initialize)
+        let terminate_ptr = *vtable_ptr.add(4);
+        let terminate_fn: ComponentTerminateFn = std::mem::transmute(terminate_ptr);
+
+        // Call terminate - ignore result
+        terminate_fn(component);
     }
 }
 
@@ -826,6 +853,7 @@ type EditControllerGetParamValueByStringFn = unsafe extern "C" fn(
 /// Function pointer type for `IEditController::setComponentState`
 ///
 /// Sets the component state for the edit controller.
+#[allow(dead_code)] // TODO: Enable when state transfer is working
 type EditControllerSetComponentStateFn =
     unsafe extern "C" fn(this: *mut c_void, state: *mut c_void) -> TResult;
 
@@ -837,8 +865,9 @@ type EditControllerSetComponentStateFn =
 /// # Safety
 ///
 /// The `edit_controller` pointer must be valid and point to a valid `IEditController` interface.
-/// The `state_stream` pointer must be valid IBStream interface or null.
+/// The `state_stream` pointer must be valid `IBStream` interface or null.
 #[allow(unsafe_code)]
+#[allow(dead_code)] // TODO: Enable when state transfer is working
 pub unsafe fn edit_controller_set_component_state(
     edit_controller: *mut c_void,
     state_stream: *mut c_void,

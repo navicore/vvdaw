@@ -25,6 +25,7 @@ mod ipc;
 mod loader;
 mod multiproc;
 mod shm;
+// mod stream; // TODO: Re-enable when state transfer is working
 mod wrapper;
 
 pub use ipc::{ControlMessage, Event, ProcessState, ResponseMessage, SharedAudioBuffer};
