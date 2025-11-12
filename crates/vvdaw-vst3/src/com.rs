@@ -982,8 +982,20 @@ pub unsafe fn edit_controller_set_component_state(
 #[allow(unsafe_code)]
 pub unsafe fn edit_controller_get_parameter_count(edit_controller: *mut c_void) -> i32 {
     unsafe {
+        // Validate edit_controller pointer
+        if edit_controller.is_null() {
+            tracing::error!("IEditController::getParameterCount - null edit_controller pointer");
+            return 0;
+        }
+
         // Get the vtable pointer
         let vtable_ptr = *(edit_controller.cast::<*const *const c_void>());
+
+        // Validate vtable pointer
+        if vtable_ptr.is_null() {
+            tracing::error!("IEditController::getParameterCount - null vtable pointer");
+            return 0;
+        }
 
         // IEditController vtable layout (from VST3 SDK documentation):
         // [0-2] FUnknown: queryInterface, addRef, release
@@ -991,27 +1003,26 @@ pub unsafe fn edit_controller_get_parameter_count(edit_controller: *mut c_void) 
         // [5] IEditController: setComponentState
         // [6] IEditController: setState
         // [7] IEditController: getState
-        // [8] IEditController: getParameterCount (per SDK docs, but crashes empirically)
-        // [9] IEditController: getParameterInfo (confirmed working)
+        // [8] IEditController: getParameterCount
+        // [9] IEditController: getParameterInfo
         // [10] IEditController: getParamStringByValue
         // ...
+        let get_parameter_count_ptr = *vtable_ptr.add(8);
 
-        // Try different offsets to find the working getParameterCount
-        // Offset 8 (SDK docs) crashes, so try others
-        let test_offset = 8;
-        tracing::debug!("Trying getParameterCount at offset {}", test_offset);
+        // Validate function pointer
+        if get_parameter_count_ptr.is_null() {
+            tracing::error!(
+                "IEditController::getParameterCount - null function pointer at vtable offset 8"
+            );
+            return 0;
+        }
 
-        let get_parameter_count_ptr = *vtable_ptr.add(test_offset);
         let get_parameter_count_fn: EditControllerGetParameterCountFn =
             std::mem::transmute(get_parameter_count_ptr);
 
         // Call getParameterCount
         let count = get_parameter_count_fn(edit_controller);
-        tracing::debug!(
-            "IEditController::getParameterCount(offset={}) returned: {}",
-            test_offset,
-            count
-        );
+        tracing::debug!("IEditController::getParameterCount() returned: {}", count);
         count
     }
 }
@@ -1028,14 +1039,37 @@ pub unsafe fn edit_controller_get_parameter_info(
     param_index: i32,
 ) -> Result<ParameterInfo, PluginError> {
     unsafe {
+        // Validate edit_controller pointer
+        if edit_controller.is_null() {
+            return Err(PluginError::FormatError(
+                "IEditController::getParameterInfo - null edit_controller pointer".to_string(),
+            ));
+        }
+
         // Allocate space for the result
         let mut param_info: ParameterInfo = std::mem::zeroed();
 
         // Get the vtable pointer
         let vtable_ptr = *(edit_controller.cast::<*const *const c_void>());
 
+        // Validate vtable pointer
+        if vtable_ptr.is_null() {
+            return Err(PluginError::FormatError(
+                "IEditController::getParameterInfo - null vtable pointer".to_string(),
+            ));
+        }
+
         // getParameterInfo is at vtable[9] (per VST3 SDK documentation)
         let get_parameter_info_ptr = *vtable_ptr.add(9);
+
+        // Validate function pointer
+        if get_parameter_info_ptr.is_null() {
+            return Err(PluginError::FormatError(
+                "IEditController::getParameterInfo - null function pointer at vtable offset 9"
+                    .to_string(),
+            ));
+        }
+
         let get_parameter_info_fn: EditControllerGetParameterInfoFn =
             std::mem::transmute(get_parameter_info_ptr);
 

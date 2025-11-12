@@ -213,6 +213,10 @@ impl Vst3Loader {
                                 // Create host application context (MANDATORY for commercial plugins)
                                 tracing::debug!("Creating host application context...");
                                 let host_app = crate::host_application::HostApplication::new();
+                                // SAFETY: Box::leak is intentional for COM objects.
+                                // The plugin takes ownership via COM reference counting (addRef/release).
+                                // When the plugin calls release() and ref_count reaches 0, the object
+                                // will deallocate itself using Box::from_raw in the release() function.
                                 let host_app_ptr =
                                     std::ptr::from_mut(Box::leak(Box::new(host_app)))
                                         .cast::<c_void>();
@@ -237,6 +241,10 @@ impl Vst3Loader {
                                         tracing::debug!("Creating component handler...");
                                         let handler =
                                             crate::component_handler::ComponentHandler::new();
+                                        // SAFETY: Box::leak is intentional for COM objects.
+                                        // The plugin takes ownership via COM reference counting (addRef/release).
+                                        // When the plugin calls release() and ref_count reaches 0, the object
+                                        // will deallocate itself using Box::from_raw in the release() function.
                                         let handler_ptr =
                                             std::ptr::from_mut(Box::leak(Box::new(handler)))
                                                 .cast::<c_void>();

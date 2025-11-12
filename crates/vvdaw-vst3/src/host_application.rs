@@ -18,6 +18,9 @@ const FUNKNOWN_IID: [u8; 16] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
 ];
 
+/// VST3 String128 maximum length (128 UTF-16 characters)
+const MAX_STRING128_LEN: usize = 128;
+
 /// Basic `IHostApplication` implementation
 ///
 /// This provides minimal host identification for VST3 plugins.
@@ -182,6 +185,16 @@ unsafe extern "C" fn get_name(this: *mut c_void, name: *mut i16) -> i32 {
     let host_name = "vvdaw";
     let mut utf16_name: Vec<u16> = host_name.encode_utf16().collect();
     utf16_name.push(0); // Null terminator
+
+    // Validate we don't exceed String128 size
+    if utf16_name.len() > MAX_STRING128_LEN {
+        tracing::error!(
+            "host_app::getName - name too long ({} chars, max {})",
+            utf16_name.len(),
+            MAX_STRING128_LEN
+        );
+        return 1; // kResultFalse
+    }
 
     tracing::debug!("host_app::getName - returning '{}'", host_name);
 
