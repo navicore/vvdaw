@@ -11,12 +11,19 @@
 //! - ✓ Proper COM reference counting
 //! - ✓ Memory-backed buffer with position tracking
 //!
-//! However, commercial VST3 plugins are currently rejecting the stream
-//! when passed to `IEditController::setComponentState()` with kInvalidArgument (result: 3).
-//! The stream implementation itself is correct - the issue is likely in how it's being used
-//! or an incorrect vtable offset for `setComponentState`.
+//! ## Usage
 //!
-//! See loader.rs for full state transfer status documentation.
+//! This module is not currently used during plugin initialization.
+//! According to VST3 spec, `setComponentState()` is only called when
+//! loading presets or restoring saved sessions, not during fresh initialization.
+//!
+//! This will be used in the future for:
+//! - Loading plugin presets
+//! - Restoring session state
+//! - Saving/loading plugin configurations
+
+// Allow dead_code for the entire module - will be used for preset/session management
+#![allow(dead_code)]
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -103,25 +110,29 @@ static VTABLE: IBStreamVTable = IBStreamVTable {
 
 impl MemoryStream {
     /// Create a new empty memory stream
+    ///
+    /// Caller must use `Box::leak()` to transfer ownership to COM reference counting
     #[allow(unsafe_code)]
-    pub fn new() -> Box<Self> {
-        Box::new(Self {
+    pub fn new() -> Self {
+        Self {
             vtable: &raw const VTABLE,
             ref_count: AtomicU32::new(1),
             data: Vec::new(),
             position: 0,
-        })
+        }
     }
 
     /// Create a memory stream with initial capacity
+    ///
+    /// Caller must use `Box::leak()` to transfer ownership to COM reference counting
     #[allow(unsafe_code)]
-    pub fn with_capacity(capacity: usize) -> Box<Self> {
-        Box::new(Self {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
             vtable: &raw const VTABLE,
             ref_count: AtomicU32::new(1),
             data: Vec::with_capacity(capacity),
             position: 0,
-        })
+        }
     }
 
     /// Get a raw pointer to this stream as a COM interface
@@ -164,11 +175,36 @@ unsafe extern "C" fn query_interface(
     }
 
     let iid_bytes = unsafe { *iid };
-    tracing::debug!("stream::queryInterface called for IID: {:?}", iid_bytes);
+
+    // Format IID as string for better logging
+    let iid_str = format!(
+        "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        iid_bytes[0],
+        iid_bytes[1],
+        iid_bytes[2],
+        iid_bytes[3],
+        iid_bytes[4],
+        iid_bytes[5],
+        iid_bytes[6],
+        iid_bytes[7],
+        iid_bytes[8],
+        iid_bytes[9],
+        iid_bytes[10],
+        iid_bytes[11],
+        iid_bytes[12],
+        iid_bytes[13],
+        iid_bytes[14],
+        iid_bytes[15]
+    );
+    tracing::info!(
+        "stream::queryInterface at {:?} called for IID: {}",
+        this,
+        iid_str
+    );
 
     // Check if requesting IBStream or FUnknown (which IBStream extends)
     if iid_bytes == IBSTREAM_IID || iid_bytes == FUNKNOWN_IID {
-        tracing::debug!("  -> Returning stream (IBStream or FUnknown)");
+        tracing::info!("  -> ✓ Returning stream (IBStream or FUnknown)");
         unsafe {
             *obj = this;
             let stream = &*(this.cast::<MemoryStream>());
@@ -176,7 +212,7 @@ unsafe extern "C" fn query_interface(
         }
         K_RESULT_OK
     } else {
-        tracing::debug!("  -> Interface not supported");
+        tracing::warn!("  -> ✗ Interface NOT supported: {}", iid_str);
         unsafe {
             *obj = std::ptr::null_mut();
         }
@@ -192,8 +228,14 @@ unsafe extern "C" fn add_ref(this: *mut c_void) -> u32 {
     }
 
     let stream = unsafe { &*(this.cast::<MemoryStream>()) };
-    let new_count = stream.ref_count.fetch_add(1, Ordering::Relaxed) + 1;
-    tracing::debug!("stream::addRef -> ref_count now {}", new_count);
+    let old_count = stream.ref_count.fetch_add(1, Ordering::Relaxed);
+    let new_count = old_count + 1;
+    tracing::debug!(
+        "stream::addRef at {:?} - ref_count: {} -> {}",
+        this,
+        old_count,
+        new_count
+    );
     new_count
 }
 
@@ -206,21 +248,33 @@ unsafe extern "C" fn release(this: *mut c_void) -> u32 {
 
     let stream = unsafe { &*(this.cast::<MemoryStream>()) };
     let old_count = stream.ref_count.fetch_sub(1, Ordering::Relaxed);
+    let new_count = old_count.saturating_sub(1);
+
     tracing::debug!(
-        "stream::release - ref_count was {}, now {}",
+        "stream::release at {:?} - ref_count: {} -> {}",
+        this,
         old_count,
-        old_count - 1
+        new_count
     );
 
     if old_count == 1 {
         // Last reference - destroy the object
-        tracing::debug!("stream::release - dropping stream (last reference)");
+        tracing::info!(
+            "stream::release at {:?} - freeing memory (last reference)",
+            this
+        );
         unsafe {
             drop(Box::from_raw(this.cast::<MemoryStream>()));
         }
         0
+    } else if old_count == 0 {
+        tracing::error!(
+            "stream::release at {:?} - ref_count was already 0! (double-free attempt)",
+            this
+        );
+        0
     } else {
-        old_count - 1
+        new_count
     }
 }
 
@@ -242,12 +296,14 @@ unsafe extern "C" fn read(
     let available = stream.data.len().saturating_sub(stream.position);
     let actual_read = to_read.min(available);
 
-    tracing::debug!(
-        "stream::read - requested: {}, available: {}, actual: {}, pos: {}",
+    tracing::info!(
+        "stream::read at {:?} - requested: {}, available: {}, actual: {}, pos: {} -> {}",
+        this,
         to_read,
         available,
         actual_read,
-        stream.position
+        stream.position,
+        stream.position + actual_read
     );
 
     if actual_read > 0 {
@@ -318,15 +374,36 @@ unsafe extern "C" fn seek(this: *mut c_void, pos: i64, mode: i32, result: *mut i
     }
 
     let stream = unsafe { &mut *(this.cast::<MemoryStream>()) };
+    let old_pos = stream.position;
+
+    let mode_str = match mode {
+        K_IBSEEK_SET => "SET",
+        K_IBSEEK_CUR => "CUR",
+        K_IBSEEK_END => "END",
+        _ => "UNKNOWN",
+    };
 
     let new_pos = match mode {
         K_IBSEEK_SET => pos.max(0) as usize,
         K_IBSEEK_CUR => (stream.position as i64 + pos).max(0) as usize,
         K_IBSEEK_END => (stream.data.len() as i64 + pos).max(0) as usize,
-        _ => return K_RESULT_FALSE,
+        _ => {
+            tracing::warn!("stream::seek - invalid mode: {}", mode);
+            return K_RESULT_FALSE;
+        }
     };
 
     stream.position = new_pos;
+
+    tracing::info!(
+        "stream::seek at {:?} - mode: {} ({}), offset: {}, pos: {} -> {}",
+        this,
+        mode_str,
+        mode,
+        pos,
+        old_pos,
+        new_pos
+    );
 
     if !result.is_null() {
         unsafe {
@@ -344,6 +421,8 @@ unsafe extern "C" fn tell(this: *mut c_void, pos: *mut i64) -> i32 {
     }
 
     let stream = unsafe { &*(this.cast::<MemoryStream>()) };
+
+    tracing::debug!("stream::tell at {:?} - position: {}", this, stream.position);
 
     unsafe {
         *pos = stream.position as i64;

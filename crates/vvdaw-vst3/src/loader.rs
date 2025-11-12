@@ -210,100 +210,68 @@ impl Vst3Loader {
                                     controller_ptr
                                 );
 
+                                // Create host application context (MANDATORY for commercial plugins)
+                                tracing::debug!("Creating host application context...");
+                                let host_app = crate::host_application::HostApplication::new();
+                                let host_app_ptr =
+                                    std::ptr::from_mut(Box::leak(Box::new(host_app)))
+                                        .cast::<c_void>();
+                                tracing::debug!(
+                                    "Created IHostApplication at {:?} (initial ref_count=1)",
+                                    host_app_ptr
+                                );
+
                                 // Initialize the edit controller
-                                // NOTE: We pass the component as context so the controller knows which component it belongs to
+                                // NOTE: According to VST3 spec, we should pass a host context (IHostApplication)
+                                // The component and controller are separate objects that communicate through state transfer.
                                 match crate::com::component_initialize(
                                     controller_ptr,
-                                    component_ptr, // Pass component as context!
+                                    host_app_ptr, // Pass host application context
                                 ) {
                                     Ok(()) => {
                                         tracing::info!("Edit controller initialized");
 
-                                        // Transfer component state to edit controller
+                                        // Create and set component handler (MANDATORY)
+                                        // NOTE: State transfer will happen later in Plugin::initialize()
+                                        // after the component is fully initialized
+                                        tracing::debug!("Creating component handler...");
+                                        let handler =
+                                            crate::component_handler::ComponentHandler::new();
+                                        let handler_ptr =
+                                            std::ptr::from_mut(Box::leak(Box::new(handler)))
+                                                .cast::<c_void>();
                                         tracing::debug!(
-                                            "Attempting state transfer to edit controller..."
+                                            "Created IComponentHandler at {:?} (initial ref_count=1)",
+                                            handler_ptr
                                         );
 
-                                        // Create memory stream for state transfer
-                                        let mut stream = crate::stream::MemoryStream::new();
-                                        let stream_ptr = stream.as_com_ptr();
-
-                                        tracing::debug!("Created IBStream at {:?}", stream_ptr);
-
-                                        // Verify the stream works by querying its own interface
-                                        let query_result = crate::com::query_interface(
-                                            stream_ptr,
-                                            &crate::com::IEDIT_CONTROLLER_IID, // Try wrong interface first
-                                        );
-                                        tracing::debug!(
-                                            "Stream queryInterface test (wrong IID): {:?}",
-                                            query_result
-                                        );
-
-                                        // Try with IBStream IID - use the result as the stream pointer
-                                        const IBSTREAM_IID: [u8; 16] = [
-                                            0xC3, 0xBF, 0x6E, 0xA2, 0x30, 0x99, 0x47, 0x52, 0x9B,
-                                            0x6B, 0xF9, 0x90, 0x1E, 0xE3, 0x3E, 0x9B,
-                                        ];
-                                        let stream_ptr_to_use = match crate::com::query_interface(
-                                            stream_ptr,
-                                            &IBSTREAM_IID,
-                                        ) {
-                                            Ok(ptr) => {
-                                                tracing::debug!(
-                                                    "Stream queryInterface for IBStream IID returned: {:?}",
-                                                    ptr
-                                                );
-                                                ptr // Use the pointer from queryInterface
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    "Stream queryInterface failed: {}",
-                                                    e
-                                                );
-                                                stream_ptr // Fall back to original pointer
-                                            }
-                                        };
-
-                                        // Get component state
-                                        match crate::com::component_get_state(
-                                            component_ptr,
-                                            stream_ptr_to_use,
+                                        // Set the component handler on the edit controller
+                                        match crate::com::edit_controller_set_component_handler(
+                                            controller_ptr,
+                                            handler_ptr,
                                         ) {
                                             Ok(()) => {
-                                                let state_size = stream.data().len();
                                                 tracing::info!(
-                                                    "Retrieved {} bytes of component state",
-                                                    state_size
+                                                    "✓ Component handler set successfully"
                                                 );
-
-                                                // Rewind stream to beginning for reading
-                                                stream.rewind();
-                                                tracing::debug!("Rewound stream to position 0");
-
-                                                // Transfer state to edit controller
-                                                tracing::debug!("Calling setComponentState...");
-                                                match crate::com::edit_controller_set_component_state(
-                                                    controller_ptr,
-                                                    stream_ptr_to_use,
-                                                ) {
-                                                    Ok(()) => {
-                                                        tracing::info!("✓ State transfer successful!");
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!("✗ setComponentState failed: {}", e);
-                                                        tracing::warn!("  Controller will have default/empty state");
-                                                    }
-                                                }
                                             }
                                             Err(e) => {
-                                                tracing::warn!(
-                                                    "Failed to get component state: {}",
+                                                tracing::error!(
+                                                    "Failed to set component handler: {}",
                                                     e
                                                 );
-                                                tracing::warn!("  Skipping state transfer");
+                                                // Release handler and return
+                                                crate::com::release_interface(handler_ptr);
+                                                // Return controller anyway, but it may not function properly
+                                                return Some(controller_ptr);
                                             }
                                         }
+
+                                        // State transfer will happen in Plugin::initialize()
+                                        // after the component is initialized
+                                        tracing::debug!(
+                                            "Edit controller ready (state transfer deferred)"
+                                        );
 
                                         return Some(controller_ptr);
                                     }

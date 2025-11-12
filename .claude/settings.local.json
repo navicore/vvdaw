@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "WebFetch(domain:steinbergmedia.github.io)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []

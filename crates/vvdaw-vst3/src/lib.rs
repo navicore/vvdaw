@@ -17,10 +17,15 @@
 //! 4. Create instances of `IComponent` and `IAudioProcessor`
 //! 5. Initialize and activate for audio processing
 
+// Clippy suppressions for COM-related patterns
+#![allow(clippy::too_many_lines)] // VST3 initialization is inherently complex
+
 use std::path::Path;
 use vvdaw_plugin::{PluginError, PluginInfo};
 
 mod com;
+mod component_handler;
+mod host_application;
 mod ipc;
 mod loader;
 mod multiproc;
