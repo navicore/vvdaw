@@ -23,6 +23,7 @@
 use crate::{ControlMessage, ResponseMessage, SharedAudioBuffer, SharedMemory};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use vvdaw_core::{ChannelCount, Frames, SampleRate};
@@ -65,14 +66,14 @@ pub struct MultiProcessPlugin {
     /// Plugin metadata
     info: PluginInfo,
 
-    /// Subprocess handle
-    child_process: Child,
+    /// Subprocess handle (wrapped in Mutex for interior mutability)
+    child_process: Mutex<Child>,
 
-    /// Stdin pipe to subprocess
-    stdin: ChildStdin,
+    /// Stdin pipe to subprocess (wrapped in Mutex for interior mutability)
+    stdin: Mutex<ChildStdin>,
 
-    /// Stdout pipe from subprocess
-    stdout: BufReader<ChildStdout>,
+    /// Stdout pipe from subprocess (wrapped in Mutex for interior mutability)
+    stdout: Mutex<BufReader<ChildStdout>>,
 
     /// Shared memory region
     _shared_memory: SharedMemory,
@@ -190,9 +191,9 @@ impl MultiProcessPlugin {
                 version: String::new(),
                 unique_id: String::new(),
             },
-            child_process: child,
-            stdin,
-            stdout,
+            child_process: Mutex::new(child),
+            stdin: Mutex::new(stdin),
+            stdout: Mutex::new(stdout),
             _shared_memory: shared_memory,
             shared_buffer,
             plugin_path,
@@ -213,27 +214,8 @@ impl MultiProcessPlugin {
                 plugin.input_channels = 2;
                 plugin.output_channels = 2;
 
-                // Query parameters from subprocess
-                tracing::debug!("Querying plugin parameters...");
-                plugin.send_message(&ControlMessage::GetParameters)?;
-                match plugin.wait_for_response()? {
-                    ResponseMessage::Parameters { parameters } => {
-                        plugin.cached_parameters = parameters.into_iter().map(Into::into).collect();
-                        tracing::info!(
-                            "Plugin '{}' has {} parameters",
-                            plugin.info.name,
-                            plugin.cached_parameters.len()
-                        );
-                    }
-                    ResponseMessage::Error { message } => {
-                        tracing::warn!("Failed to query parameters: {}", message);
-                        // Continue anyway - plugin may not have parameters
-                    }
-                    _ => {
-                        tracing::warn!("Unexpected response to GetParameters");
-                        // Continue anyway
-                    }
-                }
+                // NOTE: Parameters are queried AFTER initialization in Plugin::initialize()
+                // because some plugins only populate parameter info after being initialized
 
                 Ok(plugin)
             }
@@ -247,17 +229,26 @@ impl MultiProcessPlugin {
     }
 
     /// Send a control message to the subprocess
-    fn send_message(&mut self, message: &ControlMessage) -> Result<(), PluginError> {
+    fn send_message(&self, message: &ControlMessage) -> Result<(), PluginError> {
         let json = serde_json::to_string(message).map_err(|e| {
             PluginError::ProcessingFailed(format!("Failed to serialize message: {e}"))
         })?;
 
-        writeln!(self.stdin, "{json}")
-            .map_err(|e| PluginError::ProcessingFailed(format!("Failed to write to stdin: {e}")))?;
+        // Write to stdin (release lock immediately after flushing)
+        {
+            let mut stdin = self
+                .stdin
+                .lock()
+                .map_err(|e| PluginError::ProcessingFailed(format!("Failed to lock stdin: {e}")))?;
 
-        self.stdin
-            .flush()
-            .map_err(|e| PluginError::ProcessingFailed(format!("Failed to flush stdin: {e}")))?;
+            writeln!(*stdin, "{json}").map_err(|e| {
+                PluginError::ProcessingFailed(format!("Failed to write to stdin: {e}"))
+            })?;
+
+            stdin.flush().map_err(|e| {
+                PluginError::ProcessingFailed(format!("Failed to flush stdin: {e}"))
+            })?;
+        } // stdin lock released here
 
         Ok(())
     }
@@ -276,7 +267,7 @@ impl MultiProcessPlugin {
     /// 3. Watchdog in caller to detect hung operations
     ///
     /// If subprocess hangs without dying, this will block indefinitely.
-    fn wait_for_response(&mut self) -> Result<ResponseMessage, PluginError> {
+    fn wait_for_response(&self) -> Result<ResponseMessage, PluginError> {
         // Check if subprocess is alive before attempting to read
         if !self.is_alive() {
             return Err(PluginError::ProcessingFailed(
@@ -286,9 +277,16 @@ impl MultiProcessPlugin {
 
         let mut line = String::new();
 
-        self.stdout.read_line(&mut line).map_err(|e| {
-            PluginError::ProcessingFailed(format!("Failed to read from stdout: {e}"))
-        })?;
+        // Read from stdout (release lock immediately after reading)
+        {
+            let mut stdout = self.stdout.lock().map_err(|e| {
+                PluginError::ProcessingFailed(format!("Failed to lock stdout: {e}"))
+            })?;
+
+            stdout.read_line(&mut line).map_err(|e| {
+                PluginError::ProcessingFailed(format!("Failed to read from stdout: {e}"))
+            })?;
+        } // stdout lock released here
 
         // Verify subprocess is still alive after read
         if !self.is_alive() {
@@ -308,8 +306,12 @@ impl MultiProcessPlugin {
     }
 
     /// Check if subprocess is still alive
-    fn is_alive(&mut self) -> bool {
-        self.child_process.try_wait().ok().flatten().is_none()
+    fn is_alive(&self) -> bool {
+        self.child_process
+            .lock()
+            .ok()
+            .and_then(|mut child| child.try_wait().ok().flatten())
+            .is_none()
     }
 }
 
@@ -339,6 +341,29 @@ impl Plugin for MultiProcessPlugin {
                 self.initialized = true;
                 self.sample_rate = sample_rate;
                 self.max_block_size = max_block_size;
+
+                // Query parameters AFTER initialization
+                tracing::debug!("Querying plugin parameters after initialization...");
+                self.send_message(&ControlMessage::GetParameters)?;
+                match self.wait_for_response()? {
+                    ResponseMessage::Parameters { parameters } => {
+                        self.cached_parameters = parameters.into_iter().map(Into::into).collect();
+                        tracing::info!(
+                            "Plugin '{}' has {} parameters",
+                            self.info.name,
+                            self.cached_parameters.len()
+                        );
+                    }
+                    ResponseMessage::Error { message } => {
+                        tracing::warn!("Failed to query parameters: {}", message);
+                        // Continue anyway - plugin may not have parameters
+                    }
+                    _ => {
+                        tracing::warn!("Unexpected response to GetParameters");
+                        // Continue anyway
+                    }
+                }
+
                 Ok(())
             }
             ResponseMessage::Error { message } => Err(PluginError::InitializationFailed(message)),
@@ -465,21 +490,36 @@ impl Plugin for MultiProcessPlugin {
     }
 
     fn get_parameter(&self, id: u32) -> Result<f32, PluginError> {
-        // Not implemented due to trait signature limitations
-        //
-        // The Plugin trait's get_parameter() requires &self, but sending a message
-        // to the subprocess and waiting for a response requires &mut self (for stdout).
-        //
-        // Solutions:
-        // 1. Cache parameter values in main process (update on set_parameter)
-        // 2. Change Plugin trait to require &mut self for get_parameter
-        // 3. Use interior mutability (Mutex<BufReader>) for stdout
-        //
-        // For now, users should track parameter state themselves or use set_parameter
-        // as the source of truth (which is common in audio plugins).
-        Err(PluginError::InvalidParameter(format!(
-            "get_parameter not implemented for multi-process plugins (trait signature limitation): {id}"
-        )))
+        // Check if subprocess is alive
+        if !self.is_alive() {
+            return Err(PluginError::ProcessingFailed(
+                "Subprocess has died".to_string(),
+            ));
+        }
+
+        // Send GetParameter message
+        self.send_message(&ControlMessage::GetParameter { id })?;
+
+        // Wait for ParameterValue response
+        match self.wait_for_response()? {
+            ResponseMessage::ParameterValue {
+                id: response_id,
+                value,
+            } => {
+                if response_id != id {
+                    return Err(PluginError::InvalidParameter(format!(
+                        "Expected parameter {id} but got {response_id}"
+                    )));
+                }
+                Ok(value)
+            }
+            ResponseMessage::Error { message } => Err(PluginError::InvalidParameter(format!(
+                "Failed to get parameter {id}: {message}"
+            ))),
+            _ => Err(PluginError::InvalidParameter(format!(
+                "Unexpected response to get_parameter({id})"
+            ))),
+        }
     }
 
     fn parameters(&self) -> Vec<ParameterInfo> {
@@ -521,7 +561,9 @@ impl Plugin for MultiProcessPlugin {
 
         // Force kill if still alive after timeout
         if self.is_alive() {
-            let _ = self.child_process.kill();
+            if let Ok(mut child) = self.child_process.lock() {
+                let _ = child.kill();
+            }
             // Wait for kill to complete (non-blocking check loop)
             let kill_start = std::time::Instant::now();
             while self.is_alive() && kill_start.elapsed() < Duration::from_millis(100) {

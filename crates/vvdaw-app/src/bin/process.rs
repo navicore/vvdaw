@@ -62,7 +62,7 @@ fn inspect_plugin(plugin_path: &PathBuf) -> Result<()> {
     println!("Inspecting plugin: {}\n", plugin_path.display());
 
     // Load VST3 plugin
-    let plugin =
+    let mut plugin =
         MultiProcessPlugin::spawn(plugin_path).context("Failed to spawn plugin subprocess")?;
 
     let info = plugin.info();
@@ -79,6 +79,12 @@ fn inspect_plugin(plugin_path: &PathBuf) -> Result<()> {
         plugin.output_channels()
     );
     println!();
+
+    // Initialize plugin (some plugins only report parameters after initialization)
+    println!("Initializing plugin...");
+    plugin
+        .initialize(48000, 512)
+        .context("Failed to initialize plugin")?;
 
     // Get parameters
     let parameters = plugin.parameters();

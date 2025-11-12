@@ -6,6 +6,7 @@
 use crate::com::{GetPluginFactoryFn, PluginFactory};
 use crate::wrapper::Vst3Plugin;
 use libloading::{Library, Symbol};
+use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use vvdaw_plugin::{PluginError, PluginInfo};
@@ -127,40 +128,12 @@ impl Vst3Loader {
         };
         tracing::debug!("IAudioProcessor obtained at {:?}", processor_ptr);
 
-        // Step 8: Query for IEditController interface (for parameters)
-        // Many VST3 plugins implement IEditController on the same object as IComponent
-        tracing::debug!("Querying for IEditController interface...");
-        let edit_controller_ptr = unsafe {
-            match crate::com::query_interface(component_ptr, &crate::com::IEDIT_CONTROLLER_IID) {
-                Ok(ptr) => {
-                    tracing::debug!("IEditController obtained at {:?}", ptr);
-
-                    // Initialize the edit controller immediately to make parameters available
-                    match crate::com::component_initialize(ptr, std::ptr::null_mut()) {
-                        Ok(()) => {
-                            tracing::debug!("IEditController::initialize succeeded");
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "IEditController::initialize failed: {} (parameters may not be available)",
-                                e
-                            );
-                        }
-                    }
-
-                    Some(ptr)
-                }
-                Err(e) => {
-                    // IEditController is optional - some plugins may not expose it directly
-                    // Most commercial VST3 plugins use separate edit controllers
-                    tracing::debug!(
-                        "IEditController query failed: {} (will try separate controller)",
-                        e
-                    );
-                    None
-                }
-            }
-        };
+        // Step 8: Get edit controller (for parameters)
+        // Try two approaches:
+        // 1. Query IEditController directly (simple plugins)
+        // 2. Create separate edit controller via class ID (commercial plugins)
+        tracing::debug!("Obtaining edit controller...");
+        let edit_controller_ptr = unsafe { Self::create_edit_controller(&factory, component_ptr) };
 
         // Step 9: Create the plugin wrapper with COM pointers
         let info = PluginInfo {
@@ -178,6 +151,162 @@ impl Vst3Loader {
             processor_ptr,
             edit_controller_ptr,
         ))
+    }
+
+    /// Create or query for an edit controller
+    ///
+    /// Tries two approaches:
+    /// 1. Query `IEditController` directly on component (simple plugins)
+    /// 2. Create separate edit controller via class ID (commercial plugins)
+    #[allow(unsafe_code)]
+    unsafe fn create_edit_controller(
+        factory: &PluginFactory,
+        component_ptr: *mut c_void,
+    ) -> Option<*mut c_void> {
+        unsafe {
+            // Approach 1: Try querying IEditController directly on component
+            if let Ok(ptr) =
+                crate::com::query_interface(component_ptr, &crate::com::IEDIT_CONTROLLER_IID)
+            {
+                tracing::info!("Edit controller is implemented on component (simple plugin)");
+
+                // Initialize the edit controller immediately to make parameters available
+                match crate::com::component_initialize(ptr, std::ptr::null_mut()) {
+                    Ok(()) => {
+                        tracing::debug!("IEditController::initialize succeeded");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "IEditController::initialize failed: {} (parameters may not be available)",
+                            e
+                        );
+                    }
+                }
+
+                return Some(ptr);
+            }
+
+            // Approach 2: Query for separate controller class ID
+            tracing::debug!("Component doesn't implement IEditController directly");
+            tracing::debug!("Querying for separate controller class ID...");
+
+            match crate::com::component_get_controller_class_id(component_ptr) {
+                Ok(controller_class_id) => {
+                    // Check if class ID is non-zero (zero means no controller)
+                    if controller_class_id.iter().any(|&b| b != 0) {
+                        tracing::info!(
+                            "Component has separate controller class ID: {:?}",
+                            controller_class_id
+                        );
+
+                        // Create separate edit controller instance
+                        match factory.create_instance(
+                            &controller_class_id,
+                            &crate::com::IEDIT_CONTROLLER_IID,
+                        ) {
+                            Ok(controller_ptr) => {
+                                tracing::info!(
+                                    "Created separate edit controller at {:?}",
+                                    controller_ptr
+                                );
+
+                                // Create host application context (MANDATORY for commercial plugins)
+                                tracing::debug!("Creating host application context...");
+                                let host_app = crate::host_application::HostApplication::new();
+                                // SAFETY: Box::leak is intentional for COM objects.
+                                // The plugin takes ownership via COM reference counting (addRef/release).
+                                // When the plugin calls release() and ref_count reaches 0, the object
+                                // will deallocate itself using Box::from_raw in the release() function.
+                                let host_app_ptr =
+                                    std::ptr::from_mut(Box::leak(Box::new(host_app)))
+                                        .cast::<c_void>();
+                                tracing::debug!(
+                                    "Created IHostApplication at {:?} (initial ref_count=1)",
+                                    host_app_ptr
+                                );
+
+                                // Initialize the edit controller
+                                // NOTE: According to VST3 spec, we should pass a host context (IHostApplication)
+                                // The component and controller are separate objects that communicate through state transfer.
+                                match crate::com::component_initialize(
+                                    controller_ptr,
+                                    host_app_ptr, // Pass host application context
+                                ) {
+                                    Ok(()) => {
+                                        tracing::info!("Edit controller initialized");
+
+                                        // Create and set component handler (MANDATORY)
+                                        // NOTE: State transfer will happen later in Plugin::initialize()
+                                        // after the component is fully initialized
+                                        tracing::debug!("Creating component handler...");
+                                        let handler =
+                                            crate::component_handler::ComponentHandler::new();
+                                        // SAFETY: Box::leak is intentional for COM objects.
+                                        // The plugin takes ownership via COM reference counting (addRef/release).
+                                        // When the plugin calls release() and ref_count reaches 0, the object
+                                        // will deallocate itself using Box::from_raw in the release() function.
+                                        let handler_ptr =
+                                            std::ptr::from_mut(Box::leak(Box::new(handler)))
+                                                .cast::<c_void>();
+                                        tracing::debug!(
+                                            "Created IComponentHandler at {:?} (initial ref_count=1)",
+                                            handler_ptr
+                                        );
+
+                                        // Set the component handler on the edit controller
+                                        match crate::com::edit_controller_set_component_handler(
+                                            controller_ptr,
+                                            handler_ptr,
+                                        ) {
+                                            Ok(()) => {
+                                                tracing::info!(
+                                                    "✓ Component handler set successfully"
+                                                );
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Failed to set component handler: {}",
+                                                    e
+                                                );
+                                                // Release handler and return
+                                                crate::com::release_interface(handler_ptr);
+                                                // Return controller anyway, but it may not function properly
+                                                return Some(controller_ptr);
+                                            }
+                                        }
+
+                                        // State transfer will happen in Plugin::initialize()
+                                        // after the component is initialized
+                                        tracing::debug!(
+                                            "Edit controller ready (state transfer deferred)"
+                                        );
+
+                                        return Some(controller_ptr);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to initialize edit controller: {}",
+                                            e
+                                        );
+                                        crate::com::release_interface(controller_ptr);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create separate edit controller: {}", e);
+                            }
+                        }
+                    } else {
+                        tracing::debug!("Plugin has no edit controller (class ID is zero)");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to get controller class ID: {}", e);
+                }
+            }
+
+            None
+        }
     }
 
     /// Scan a directory for VST3 plugins

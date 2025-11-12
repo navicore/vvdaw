@@ -124,24 +124,88 @@ impl Plugin for Vst3Plugin {
             .resize(self.output_channels, std::ptr::null_mut());
 
         unsafe {
-            // Step 1: Initialize the component
-            // Pass null context for now (TODO: implement proper host context)
-            crate::com::component_initialize(self.component, std::ptr::null_mut())?;
+            // Step 1: Create host application context and initialize the component
+            tracing::debug!("Creating host application context...");
+            let host_app = crate::host_application::HostApplication::new();
+            let host_app_ptr =
+                std::ptr::from_mut(Box::leak(Box::new(host_app))).cast::<std::ffi::c_void>();
+            tracing::debug!(
+                "Created IHostApplication at {:?} for component",
+                host_app_ptr
+            );
+
+            // Initialize component with host context
+            crate::com::component_initialize(self.component, host_app_ptr)?;
             tracing::debug!("IComponent::initialize succeeded");
 
-            // Step 1a: Initialize the edit controller if available
+            // Step 1a: Connect component and controller via IConnectionPoint (if available)
+            // This MUST happen before state transfer
             if let Some(edit_controller) = self.edit_controller {
-                match crate::com::component_initialize(edit_controller, std::ptr::null_mut()) {
-                    Ok(()) => {
-                        tracing::debug!("IEditController::initialize succeeded");
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "IEditController::initialize failed: {} (continuing anyway)",
-                            e
+                tracing::debug!("Establishing IConnectionPoint connections...");
+
+                // Query component for IConnectionPoint
+                let component_cp =
+                    crate::com::query_interface(self.component, &crate::com::ICONNECTION_POINT_IID)
+                        .map_or_else(
+                            |_| {
+                                tracing::debug!("Component does not implement IConnectionPoint");
+                                None
+                            },
+                            |ptr| {
+                                tracing::debug!(
+                                    "Component implements IConnectionPoint at {:?}",
+                                    ptr
+                                );
+                                Some(ptr)
+                            },
                         );
+
+                // Query controller for IConnectionPoint
+                let controller_cp = crate::com::query_interface(
+                    edit_controller,
+                    &crate::com::ICONNECTION_POINT_IID,
+                )
+                .map_or_else(
+                    |_| {
+                        tracing::debug!("Controller does not implement IConnectionPoint");
+                        None
+                    },
+                    |ptr| {
+                        tracing::debug!("Controller implements IConnectionPoint at {:?}", ptr);
+                        Some(ptr)
+                    },
+                );
+
+                // Connect if both support IConnectionPoint
+                if let (Some(comp_cp), Some(ctrl_cp)) = (component_cp, controller_cp) {
+                    tracing::debug!("Connecting component and controller...");
+
+                    // Connect component to controller
+                    if let Err(e) = crate::com::connection_point_connect(comp_cp, ctrl_cp) {
+                        tracing::warn!("Failed to connect component to controller: {}", e);
+                    } else {
+                        tracing::debug!("✓ Component -> Controller connection established");
                     }
+
+                    // Connect controller to component (bidirectional)
+                    if let Err(e) = crate::com::connection_point_connect(ctrl_cp, comp_cp) {
+                        tracing::warn!("Failed to connect controller to component: {}", e);
+                    } else {
+                        tracing::debug!("✓ Controller -> Component connection established");
+                    }
+
+                    // Release our references (the connections keep them alive)
+                    crate::com::release_interface(comp_cp);
+                    crate::com::release_interface(ctrl_cp);
+                } else {
+                    tracing::debug!("IConnectionPoint not supported by both - skipping connection");
                 }
+
+                // Note: setComponentState is only for loading presets/saved sessions,
+                // not for initialization. During initialization, the controller
+                // starts with default parameter values and we can control them
+                // directly via setParamNormalized().
+                tracing::debug!("Edit controller ready with default parameter values");
             }
 
             // Step 2: Set up audio processing parameters
@@ -354,7 +418,7 @@ impl Plugin for Vst3Plugin {
         unsafe {
             // Get parameter count
             let param_count = crate::com::edit_controller_get_parameter_count(edit_controller);
-            tracing::debug!("Plugin has {} parameters", param_count);
+            tracing::debug!("Edit controller has {} parameters", param_count);
 
             if param_count <= 0 {
                 return Vec::new();
