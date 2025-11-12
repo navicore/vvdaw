@@ -3,7 +3,9 @@
     "allow": [
       "Bash(cargo build:*)",
       "WebFetch(domain:steinbergmedia.github.io)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(cargo run:*)",
+      "Bash(RUST_LOG=vvdaw_vst3=debug cargo run:*)"
     ],
     "deny": [],
     "ask": []

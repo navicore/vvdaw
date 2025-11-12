@@ -213,27 +213,8 @@ impl MultiProcessPlugin {
                 plugin.input_channels = 2;
                 plugin.output_channels = 2;
 
-                // Query parameters from subprocess
-                tracing::debug!("Querying plugin parameters...");
-                plugin.send_message(&ControlMessage::GetParameters)?;
-                match plugin.wait_for_response()? {
-                    ResponseMessage::Parameters { parameters } => {
-                        plugin.cached_parameters = parameters.into_iter().map(Into::into).collect();
-                        tracing::info!(
-                            "Plugin '{}' has {} parameters",
-                            plugin.info.name,
-                            plugin.cached_parameters.len()
-                        );
-                    }
-                    ResponseMessage::Error { message } => {
-                        tracing::warn!("Failed to query parameters: {}", message);
-                        // Continue anyway - plugin may not have parameters
-                    }
-                    _ => {
-                        tracing::warn!("Unexpected response to GetParameters");
-                        // Continue anyway
-                    }
-                }
+                // NOTE: Parameters are queried AFTER initialization in Plugin::initialize()
+                // because some plugins only populate parameter info after being initialized
 
                 Ok(plugin)
             }
@@ -339,6 +320,29 @@ impl Plugin for MultiProcessPlugin {
                 self.initialized = true;
                 self.sample_rate = sample_rate;
                 self.max_block_size = max_block_size;
+
+                // Query parameters AFTER initialization
+                tracing::debug!("Querying plugin parameters after initialization...");
+                self.send_message(&ControlMessage::GetParameters)?;
+                match self.wait_for_response()? {
+                    ResponseMessage::Parameters { parameters } => {
+                        self.cached_parameters = parameters.into_iter().map(Into::into).collect();
+                        tracing::info!(
+                            "Plugin '{}' has {} parameters",
+                            self.info.name,
+                            self.cached_parameters.len()
+                        );
+                    }
+                    ResponseMessage::Error { message } => {
+                        tracing::warn!("Failed to query parameters: {}", message);
+                        // Continue anyway - plugin may not have parameters
+                    }
+                    _ => {
+                        tracing::warn!("Unexpected response to GetParameters");
+                        // Continue anyway
+                    }
+                }
+
                 Ok(())
             }
             ResponseMessage::Error { message } => Err(PluginError::InitializationFailed(message)),

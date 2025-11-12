@@ -985,19 +985,34 @@ pub unsafe fn edit_controller_get_parameter_count(edit_controller: *mut c_void) 
         // Get the vtable pointer
         let vtable_ptr = *(edit_controller.cast::<*const *const c_void>());
 
-        // IEditController vtable layout:
+        // IEditController vtable layout (from VST3 SDK documentation):
         // [0-2] FUnknown: queryInterface, addRef, release
         // [3-4] IPluginBase: initialize, terminate
         // [5] IEditController: setComponentState
         // [6] IEditController: setState
         // [7] IEditController: getState
-        // [8] IEditController: getParameterCount
-        let get_parameter_count_ptr = *vtable_ptr.add(8);
+        // [8] IEditController: getParameterCount (per SDK docs, but crashes empirically)
+        // [9] IEditController: getParameterInfo (confirmed working)
+        // [10] IEditController: getParamStringByValue
+        // ...
+
+        // Try different offsets to find the working getParameterCount
+        // Offset 8 (SDK docs) crashes, so try others
+        let test_offset = 8;
+        tracing::debug!("Trying getParameterCount at offset {}", test_offset);
+
+        let get_parameter_count_ptr = *vtable_ptr.add(test_offset);
         let get_parameter_count_fn: EditControllerGetParameterCountFn =
             std::mem::transmute(get_parameter_count_ptr);
 
         // Call getParameterCount
-        get_parameter_count_fn(edit_controller)
+        let count = get_parameter_count_fn(edit_controller);
+        tracing::debug!(
+            "IEditController::getParameterCount(offset={}) returned: {}",
+            test_offset,
+            count
+        );
+        count
     }
 }
 
@@ -1019,7 +1034,7 @@ pub unsafe fn edit_controller_get_parameter_info(
         // Get the vtable pointer
         let vtable_ptr = *(edit_controller.cast::<*const *const c_void>());
 
-        // getParameterInfo is at vtable[9]
+        // getParameterInfo is at vtable[9] (per VST3 SDK documentation)
         let get_parameter_info_ptr = *vtable_ptr.add(9);
         let get_parameter_info_fn: EditControllerGetParameterInfoFn =
             std::mem::transmute(get_parameter_info_ptr);

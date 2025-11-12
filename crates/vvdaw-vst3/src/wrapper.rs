@@ -418,7 +418,7 @@ impl Plugin for Vst3Plugin {
         unsafe {
             // Get parameter count
             let param_count = crate::com::edit_controller_get_parameter_count(edit_controller);
-            tracing::debug!("Plugin has {} parameters", param_count);
+            tracing::debug!("Edit controller has {} parameters", param_count);
 
             if param_count <= 0 {
                 return Vec::new();
