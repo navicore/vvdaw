@@ -32,6 +32,13 @@ struct Args {
     #[arg(short, long, default_value_t = 512)]
     block_size: usize,
 
+    /// Set plugin parameters (format: "ParamName=value")
+    /// Values should be in the parameter's natural range (e.g., 0.0-1.0 for normalized params).
+    /// The value will be clamped to the parameter's min/max range if out of bounds.
+    /// Can be specified multiple times.
+    #[arg(long = "param")]
+    params: Vec<String>,
+
     /// Inspect plugin parameters and info (don't process audio)
     #[arg(long, conflicts_with_all = ["input", "output"])]
     inspect: bool,
@@ -119,6 +126,61 @@ fn inspect_plugin(plugin_path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Apply parameter settings to plugin
+fn apply_parameters(plugin: &mut dyn Plugin, param_specs: &[String]) -> Result<()> {
+    // Get all available parameters
+    let parameters = plugin.parameters();
+
+    for spec in param_specs {
+        // Parse "Name=value" format
+        let parts: Vec<&str> = spec.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            anyhow::bail!("Invalid parameter format '{spec}'. Expected 'Name=value'");
+        }
+
+        let param_name = parts[0].trim();
+        let value_str = parts[1].trim();
+
+        // Parse value as f32
+        let value: f32 = value_str
+            .parse()
+            .with_context(|| format!("Invalid parameter value '{value_str}' (must be a number)"))?;
+
+        // Find parameter by name
+        let param = parameters
+            .iter()
+            .find(|p| p.name == param_name)
+            .with_context(|| format!("Parameter '{param_name}' not found in plugin"))?;
+
+        // Validate value is in range
+        if value < param.min_value || value > param.max_value {
+            tracing::warn!(
+                "Parameter '{}' value {:.3} is outside range [{:.3}, {:.3}], clamping",
+                param_name,
+                value,
+                param.min_value,
+                param.max_value
+            );
+        }
+
+        let clamped_value = value.clamp(param.min_value, param.max_value);
+
+        // Set the parameter
+        plugin
+            .set_parameter(param.id, clamped_value)
+            .with_context(|| format!("Failed to set parameter '{param_name}'"))?;
+
+        tracing::info!(
+            "Set parameter '{}' (ID {}) = {:.3}",
+            param_name,
+            param.id,
+            clamped_value
+        );
+    }
+
+    Ok(())
+}
+
 /// Process audio file through plugin
 fn process_audio_file(args: &Args) -> Result<()> {
     let input = args.input.as_ref().unwrap();
@@ -198,6 +260,12 @@ fn process_audio_file(args: &Args) -> Result<()> {
         plugin.input_channels(),
         plugin.output_channels()
     );
+
+    // Apply parameter settings
+    if !args.params.is_empty() {
+        tracing::info!("Setting {} parameter(s)...", args.params.len());
+        apply_parameters(&mut plugin, &args.params)?;
+    }
 
     // Process audio in blocks
     tracing::info!("Processing audio...");

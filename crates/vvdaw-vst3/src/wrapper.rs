@@ -4,7 +4,9 @@
 //! and implements our format-agnostic Plugin trait.
 
 use crate::com::PluginFactory;
+use crate::parameter_changes::ParameterChanges;
 use libloading::Library;
+use std::collections::HashMap;
 use vvdaw_core::{ChannelCount, Frames, SampleRate};
 use vvdaw_plugin::{AudioBuffer, EventBuffer, ParameterInfo, Plugin, PluginError, PluginInfo};
 
@@ -39,6 +41,14 @@ pub struct Vst3Plugin {
 
     // Track activation state to avoid double-deactivation
     is_active: bool,
+
+    // Track parameters that changed since last process() call
+    // Map of parameter ID -> normalized value (0.0-1.0)
+    dirty_parameters: HashMap<u32, f64>,
+
+    // Reusable parameter changes object for sending parameter updates to processor
+    // This is populated from dirty_parameters before each process() call
+    parameter_changes: ParameterChanges,
 }
 
 impl Vst3Plugin {
@@ -82,6 +92,8 @@ impl Vst3Plugin {
             input_channel_ptrs: Vec::with_capacity(input_channels),
             output_channel_ptrs: Vec::with_capacity(output_channels),
             is_active: false,
+            dirty_parameters: HashMap::new(),
+            parameter_changes: ParameterChanges::new(),
         }
     }
 }
@@ -335,7 +347,22 @@ impl Plugin for Vst3Plugin {
                 channel_buffers_64: std::ptr::null_mut(),
             };
 
-            // Step 4: Create ProcessData structure
+            // Step 4: Populate parameter changes from dirty parameters
+            // Clear previous parameter changes and add current dirty parameters
+            self.parameter_changes.clear();
+            for (&param_id, &value) in &self.dirty_parameters {
+                // Add parameter change at sample offset 0 (start of buffer)
+                self.parameter_changes.add_change(param_id, 0, value);
+            }
+
+            // Get pointer to parameter changes (null if no changes)
+            let param_changes_ptr = if self.dirty_parameters.is_empty() {
+                std::ptr::null_mut()
+            } else {
+                (&raw mut self.parameter_changes).cast::<std::ffi::c_void>()
+            };
+
+            // Step 5: Create ProcessData structure
             let mut process_data = crate::com::ProcessData {
                 process_mode: 0,         // 0 = realtime
                 symbolic_sample_size: 0, // 0 = 32-bit float
@@ -344,7 +371,7 @@ impl Plugin for Vst3Plugin {
                 num_outputs: 1, // Single stereo bus for now
                 inputs: &raw mut input_bus,
                 outputs: &raw mut output_bus,
-                input_param_changes: std::ptr::null_mut(),
+                input_param_changes: param_changes_ptr,
                 output_param_changes: std::ptr::null_mut(),
                 input_events: std::ptr::null_mut(),
                 output_events: std::ptr::null_mut(),
@@ -371,8 +398,11 @@ impl Plugin for Vst3Plugin {
                 }
             }
 
-            // Step 5: Call VST3 processor->process()
+            // Step 6: Call VST3 processor->process()
             crate::com::processor_process(self.processor, &raw mut process_data)?;
+
+            // Step 7: Clear dirty parameters now that they've been sent to processor
+            self.dirty_parameters.clear();
 
             // DEBUG: Check buffers after processing
             if count < 3
@@ -391,20 +421,38 @@ impl Plugin for Vst3Plugin {
         Ok(())
     }
 
+    #[allow(unsafe_code)]
     fn set_parameter(&mut self, id: u32, value: f32) -> Result<(), PluginError> {
         tracing::trace!("Setting parameter {} to {}", id, value);
 
-        // TODO: Set VST3 parameter
-        // edit_controller->setParamNormalized(id, value)
+        // Set parameter on edit controller
+        if let Some(edit_controller) = self.edit_controller {
+            unsafe {
+                crate::com::edit_controller_set_param_normalized(
+                    edit_controller,
+                    id,
+                    f64::from(value),
+                )?;
+            }
+        }
+
+        // Mark parameter as dirty so it will be sent to processor on next process() call
+        self.dirty_parameters.insert(id, f64::from(value));
 
         Ok(())
     }
 
-    fn get_parameter(&self, _id: u32) -> Result<f32, PluginError> {
-        // TODO: Get VST3 parameter
-        // edit_controller->getParamNormalized(id)
-
-        Ok(0.0)
+    #[allow(unsafe_code)]
+    fn get_parameter(&self, id: u32) -> Result<f32, PluginError> {
+        if let Some(edit_controller) = self.edit_controller {
+            let normalized_value =
+                unsafe { crate::com::edit_controller_get_param_normalized(edit_controller, id)? };
+            Ok(normalized_value as f32)
+        } else {
+            Err(PluginError::FormatError(
+                "Edit controller not initialized".to_string(),
+            ))
+        }
     }
 
     #[allow(unsafe_code)] // Required for FFI calls

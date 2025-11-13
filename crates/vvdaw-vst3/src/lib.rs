@@ -29,6 +29,7 @@ mod host_application;
 mod ipc;
 mod loader;
 mod multiproc;
+mod parameter_changes;
 mod shm;
 mod stream;
 mod wrapper;

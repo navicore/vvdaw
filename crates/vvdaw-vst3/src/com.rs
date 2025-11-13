@@ -1086,6 +1086,136 @@ pub unsafe fn edit_controller_get_parameter_info(
     }
 }
 
+/// Function pointer type for `IEditController::getParamNormalized`
+///
+/// Gets the current normalized value [0.0, 1.0] for a parameter.
+type EditControllerGetParamNormalizedFn =
+    unsafe extern "C" fn(this: *mut c_void, id: u32, value: *mut f64) -> TResult;
+
+/// Call `IEditController::getParamNormalized(id, value)`
+///
+/// # Safety
+///
+/// The `edit_controller` pointer must be valid and point to a valid `IEditController` interface.
+#[allow(unsafe_code)]
+pub unsafe fn edit_controller_get_param_normalized(
+    edit_controller: *mut c_void,
+    id: u32,
+) -> Result<f64, PluginError> {
+    unsafe {
+        // Validate edit_controller pointer
+        if edit_controller.is_null() {
+            return Err(PluginError::FormatError(
+                "IEditController::getParamNormalized - null edit_controller pointer".to_string(),
+            ));
+        }
+
+        let mut value: f64 = 0.0;
+
+        // Get the vtable pointer
+        let vtable_ptr = *(edit_controller.cast::<*const *const c_void>());
+
+        // Validate vtable pointer
+        if vtable_ptr.is_null() {
+            return Err(PluginError::FormatError(
+                "IEditController::getParamNormalized - null vtable pointer".to_string(),
+            ));
+        }
+
+        // getParamNormalized is at vtable[14] (per VST3 SDK documentation)
+        let get_param_normalized_ptr = *vtable_ptr.add(14);
+
+        // Validate function pointer
+        if get_param_normalized_ptr.is_null() {
+            return Err(PluginError::FormatError(
+                "IEditController::getParamNormalized - null function pointer at vtable offset 14"
+                    .to_string(),
+            ));
+        }
+
+        let get_param_normalized_fn: EditControllerGetParamNormalizedFn =
+            std::mem::transmute(get_param_normalized_ptr);
+
+        // Call getParamNormalized
+        let result = get_param_normalized_fn(edit_controller, id, &raw mut value);
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IEditController::getParamNormalized failed with result: {result}"
+            )));
+        }
+
+        Ok(value)
+    }
+}
+
+/// Function pointer type for `IEditController::setParamNormalized`
+///
+/// Sets the current normalized value [0.0, 1.0] for a parameter.
+type EditControllerSetParamNormalizedFn =
+    unsafe extern "C" fn(this: *mut c_void, id: u32, value: f64) -> TResult;
+
+/// Call `IEditController::setParamNormalized(id, value)`
+///
+/// # Safety
+///
+/// The `edit_controller` pointer must be valid and point to a valid `IEditController` interface.
+#[allow(unsafe_code)]
+pub unsafe fn edit_controller_set_param_normalized(
+    edit_controller: *mut c_void,
+    id: u32,
+    value: f64,
+) -> Result<(), PluginError> {
+    unsafe {
+        // Validate edit_controller pointer
+        if edit_controller.is_null() {
+            return Err(PluginError::FormatError(
+                "IEditController::setParamNormalized - null edit_controller pointer".to_string(),
+            ));
+        }
+
+        // Get the vtable pointer
+        let vtable_ptr = *(edit_controller.cast::<*const *const c_void>());
+
+        // Validate vtable pointer
+        if vtable_ptr.is_null() {
+            return Err(PluginError::FormatError(
+                "IEditController::setParamNormalized - null vtable pointer".to_string(),
+            ));
+        }
+
+        // setParamNormalized is at vtable[15] (per VST3 SDK documentation)
+        let set_param_normalized_ptr = *vtable_ptr.add(15);
+
+        // Validate function pointer
+        if set_param_normalized_ptr.is_null() {
+            return Err(PluginError::FormatError(
+                "IEditController::setParamNormalized - null function pointer at vtable offset 15"
+                    .to_string(),
+            ));
+        }
+
+        let set_param_normalized_fn: EditControllerSetParamNormalizedFn =
+            std::mem::transmute(set_param_normalized_ptr);
+
+        // Call setParamNormalized
+        tracing::trace!(
+            "Calling setParamNormalized(id={}, value={}) via vtable offset 15",
+            id,
+            value
+        );
+        let result = set_param_normalized_fn(edit_controller, id, value);
+
+        if result != K_RESULT_OK {
+            return Err(PluginError::FormatError(format!(
+                "IEditController::setParamNormalized failed with result: {result}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
 /// Function pointer type for `IConnectionPoint::connect`
 ///
 /// Establishes a connection between two connection points.
