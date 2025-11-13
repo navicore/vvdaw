@@ -6,14 +6,11 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 const K_RESULT_OK: i32 = 0;
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 const K_RESULT_FALSE: i32 = 1;
 
 /// Parameter value change point (sample-accurate)
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 struct ValuePoint {
     sample_offset: i32,
     value: f64,
@@ -23,7 +20,6 @@ struct ValuePoint {
 ///
 /// Stores value changes for a single parameter with sample-accurate timing.
 #[repr(C)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 pub struct ParamValueQueue {
     /// COM vtable pointer
     vtable: *const IParamValueQueueVTable,
@@ -40,7 +36,6 @@ pub struct ParamValueQueue {
 
 /// COM vtable for `IParamValueQueue`
 #[repr(C)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 struct IParamValueQueueVTable {
     // FUnknown methods
     query_interface:
@@ -65,7 +60,6 @@ struct IParamValueQueueVTable {
     ) -> i32,
 }
 
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 static PARAM_VALUE_QUEUE_VTABLE: IParamValueQueueVTable = IParamValueQueueVTable {
     query_interface,
     add_ref,
@@ -78,7 +72,6 @@ static PARAM_VALUE_QUEUE_VTABLE: IParamValueQueueVTable = IParamValueQueueVTable
 
 impl ParamValueQueue {
     /// Create a new parameter value queue
-    #[allow(dead_code)] // Will be used once parameter changes are implemented
     pub fn new(param_id: u32) -> Self {
         Self {
             vtable: &raw const PARAM_VALUE_QUEUE_VTABLE,
@@ -89,7 +82,6 @@ impl ParamValueQueue {
     }
 
     /// Add a value change at a specific sample offset
-    #[allow(dead_code)] // Will be used once parameter changes are implemented
     pub fn add_value(&mut self, sample_offset: i32, value: f64) {
         self.points.push(ValuePoint {
             sample_offset,
@@ -101,7 +93,6 @@ impl ParamValueQueue {
 // FUnknown implementation
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn query_interface(
     _this: *mut c_void,
     _iid: *const [u8; 16],
@@ -112,7 +103,6 @@ unsafe extern "C" fn query_interface(
 }
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn add_ref(this: *mut c_void) -> u32 {
     unsafe {
         let queue = &*(this.cast::<ParamValueQueue>());
@@ -122,7 +112,6 @@ unsafe extern "C" fn add_ref(this: *mut c_void) -> u32 {
 }
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn release(this: *mut c_void) -> u32 {
     unsafe {
         let queue = &*(this.cast::<ParamValueQueue>());
@@ -141,7 +130,6 @@ unsafe extern "C" fn release(this: *mut c_void) -> u32 {
 // IParamValueQueue implementation
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn get_parameter_id(this: *mut c_void) -> u32 {
     unsafe {
         let queue = &*(this.cast::<ParamValueQueue>());
@@ -150,7 +138,6 @@ unsafe extern "C" fn get_parameter_id(this: *mut c_void) -> u32 {
 }
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn get_point_count(this: *mut c_void) -> i32 {
     unsafe {
         let queue = &*(this.cast::<ParamValueQueue>());
@@ -159,7 +146,6 @@ unsafe extern "C" fn get_point_count(this: *mut c_void) -> i32 {
 }
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn get_point(
     this: *mut c_void,
     index: i32,
@@ -186,7 +172,6 @@ unsafe extern "C" fn get_point(
 }
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn add_point(
     this: *mut c_void,
     sample_offset: i32,
@@ -214,7 +199,6 @@ unsafe extern "C" fn add_point(
 ///
 /// Manages a collection of parameter value queues, one per changed parameter.
 #[repr(C)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 pub struct ParameterChanges {
     /// COM vtable pointer
     vtable: *const IParameterChangesVTable,
@@ -228,7 +212,6 @@ pub struct ParameterChanges {
 
 /// COM vtable for `IParameterChanges`
 #[repr(C)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 struct IParameterChangesVTable {
     // FUnknown methods
     query_interface_changes:
@@ -243,7 +226,6 @@ struct IParameterChangesVTable {
         unsafe extern "C" fn(this: *mut c_void, id: *const u32, index: *mut i32) -> *mut c_void,
 }
 
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 static PARAMETER_CHANGES_VTABLE: IParameterChangesVTable = IParameterChangesVTable {
     query_interface_changes,
     add_ref_changes,
@@ -255,7 +237,6 @@ static PARAMETER_CHANGES_VTABLE: IParameterChangesVTable = IParameterChangesVTab
 
 impl ParameterChanges {
     /// Create a new empty parameter changes collection
-    #[allow(dead_code)] // Will be used once parameter changes are implemented
     pub fn new() -> Self {
         Self {
             vtable: &raw const PARAMETER_CHANGES_VTABLE,
@@ -269,7 +250,6 @@ impl ParameterChanges {
     /// If a queue already exists for this parameter, adds to that queue.
     /// Otherwise creates a new queue.
     #[allow(unsafe_code)]
-    #[allow(dead_code)] // Will be used once parameter changes are implemented
     pub fn add_change(&mut self, param_id: u32, sample_offset: i32, value: f64) {
         // Find existing queue for this parameter
         for &queue_ptr in &self.queues {
@@ -290,7 +270,6 @@ impl ParameterChanges {
 
     /// Clear all queues (for reuse)
     #[allow(unsafe_code)]
-    #[allow(dead_code)] // Will be used once parameter changes are implemented
     pub fn clear(&mut self) {
         // Release all queue references
         for &queue_ptr in &self.queues {
@@ -309,10 +288,16 @@ impl Drop for ParameterChanges {
     }
 }
 
+// SAFETY: ParameterChanges is only used from the audio thread in Vst3Plugin.
+// The raw pointers to ParamValueQueue are owned and managed exclusively by this struct.
+// The vtable is a static reference and safe to share.
+// The ref_count is AtomicU32 which is already Send + Sync.
+#[allow(unsafe_code)]
+unsafe impl Send for ParameterChanges {}
+
 // FUnknown implementation for ParameterChanges
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn query_interface_changes(
     _this: *mut c_void,
     _iid: *const [u8; 16],
@@ -322,7 +307,6 @@ unsafe extern "C" fn query_interface_changes(
 }
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn add_ref_changes(this: *mut c_void) -> u32 {
     unsafe {
         let changes = &*(this.cast::<ParameterChanges>());
@@ -332,7 +316,6 @@ unsafe extern "C" fn add_ref_changes(this: *mut c_void) -> u32 {
 }
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn release_changes(this: *mut c_void) -> u32 {
     unsafe {
         let changes = &*(this.cast::<ParameterChanges>());
@@ -351,7 +334,6 @@ unsafe extern "C" fn release_changes(this: *mut c_void) -> u32 {
 // IParameterChanges implementation
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn get_parameter_count_changes(this: *mut c_void) -> i32 {
     unsafe {
         let changes = &*(this.cast::<ParameterChanges>());
@@ -360,7 +342,6 @@ unsafe extern "C" fn get_parameter_count_changes(this: *mut c_void) -> i32 {
 }
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn get_parameter_data_changes(this: *mut c_void, index: i32) -> *mut c_void {
     unsafe {
         let changes = &*(this.cast::<ParameterChanges>());
@@ -374,7 +355,6 @@ unsafe extern "C" fn get_parameter_data_changes(this: *mut c_void, index: i32) -
 }
 
 #[allow(unsafe_code)]
-#[allow(dead_code)] // Will be used once parameter changes are implemented
 unsafe extern "C" fn add_parameter_data_changes(
     this: *mut c_void,
     id: *const u32,
