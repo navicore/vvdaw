@@ -93,7 +93,8 @@ impl AudioEngine {
                             // Receive the plugin instance from the plugin channel
                             if let Ok(plugin) = channels.plugin_rx.try_recv() {
                                 // Ignore errors - can't log in audio callback
-                                let _ = graph.add_node(plugin);
+                                // TODO: Track plugin source information through the channel
+                                let _ = graph.add_node(plugin, crate::graph::PluginSource::Unknown);
                             }
                         }
                         AudioCommand::RemoveNode(node_id) => {
