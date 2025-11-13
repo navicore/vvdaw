@@ -5,6 +5,7 @@
 
 use crate::com::PluginFactory;
 use libloading::Library;
+use std::collections::HashMap;
 use vvdaw_core::{ChannelCount, Frames, SampleRate};
 use vvdaw_plugin::{AudioBuffer, EventBuffer, ParameterInfo, Plugin, PluginError, PluginInfo};
 
@@ -39,6 +40,10 @@ pub struct Vst3Plugin {
 
     // Track activation state to avoid double-deactivation
     is_active: bool,
+
+    // Track parameters that changed since last process() call
+    // Map of parameter ID -> normalized value (0.0-1.0)
+    dirty_parameters: HashMap<u32, f64>,
 }
 
 impl Vst3Plugin {
@@ -82,6 +87,7 @@ impl Vst3Plugin {
             input_channel_ptrs: Vec::with_capacity(input_channels),
             output_channel_ptrs: Vec::with_capacity(output_channels),
             is_active: false,
+            dirty_parameters: HashMap::new(),
         }
     }
 }
@@ -391,20 +397,38 @@ impl Plugin for Vst3Plugin {
         Ok(())
     }
 
+    #[allow(unsafe_code)]
     fn set_parameter(&mut self, id: u32, value: f32) -> Result<(), PluginError> {
         tracing::trace!("Setting parameter {} to {}", id, value);
 
-        // TODO: Set VST3 parameter
-        // edit_controller->setParamNormalized(id, value)
+        // Set parameter on edit controller
+        if let Some(edit_controller) = self.edit_controller {
+            unsafe {
+                crate::com::edit_controller_set_param_normalized(
+                    edit_controller,
+                    id,
+                    f64::from(value),
+                )?;
+            }
+        }
+
+        // Mark parameter as dirty so it will be sent to processor on next process() call
+        self.dirty_parameters.insert(id, f64::from(value));
 
         Ok(())
     }
 
-    fn get_parameter(&self, _id: u32) -> Result<f32, PluginError> {
-        // TODO: Get VST3 parameter
-        // edit_controller->getParamNormalized(id)
-
-        Ok(0.0)
+    #[allow(unsafe_code)]
+    fn get_parameter(&self, id: u32) -> Result<f32, PluginError> {
+        if let Some(edit_controller) = self.edit_controller {
+            let normalized_value =
+                unsafe { crate::com::edit_controller_get_param_normalized(edit_controller, id)? };
+            Ok(normalized_value as f32)
+        } else {
+            Err(PluginError::FormatError(
+                "Edit controller not initialized".to_string(),
+            ))
+        }
     }
 
     #[allow(unsafe_code)] // Required for FFI calls
