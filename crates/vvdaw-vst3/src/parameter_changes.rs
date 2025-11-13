@@ -92,14 +92,37 @@ impl ParamValueQueue {
 
 // FUnknown implementation
 
+// FUnknown IID: {0x00000000, 0x00000000, 0xC0000000, 0x00000046}
+const FUNKNOWN_IID: [u8; 16] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
+
 #[allow(unsafe_code)]
 unsafe extern "C" fn query_interface(
-    _this: *mut c_void,
-    _iid: *const [u8; 16],
-    _obj: *mut *mut c_void,
+    this: *mut c_void,
+    iid: *const [u8; 16],
+    obj: *mut *mut c_void,
 ) -> i32 {
-    // For now, don't support querying other interfaces
-    K_RESULT_FALSE
+    if iid.is_null() || obj.is_null() {
+        return K_RESULT_FALSE;
+    }
+
+    unsafe {
+        let requested_iid = &*iid;
+
+        // Support FUnknown (base interface)
+        if requested_iid == &FUNKNOWN_IID {
+            *obj = this;
+            // Add reference for the returned interface
+            let queue = &*(this.cast::<ParamValueQueue>());
+            queue.ref_count.fetch_add(1, Ordering::Relaxed);
+            return K_RESULT_OK;
+        }
+
+        // Don't support other interfaces
+        *obj = std::ptr::null_mut();
+        K_RESULT_FALSE
+    }
 }
 
 #[allow(unsafe_code)]
@@ -141,7 +164,8 @@ unsafe extern "C" fn get_parameter_id(this: *mut c_void) -> u32 {
 unsafe extern "C" fn get_point_count(this: *mut c_void) -> i32 {
     unsafe {
         let queue = &*(this.cast::<ParamValueQueue>());
-        queue.points.len() as i32
+        // Clamp to i32::MAX to avoid overflow
+        queue.points.len().min(i32::MAX as usize) as i32
     }
 }
 
@@ -252,11 +276,15 @@ impl ParameterChanges {
     #[allow(unsafe_code)]
     pub fn add_change(&mut self, param_id: u32, sample_offset: i32, value: f64) {
         // Find existing queue for this parameter
+        // SAFETY: We own all queue pointers exclusively. We only read the param_id field
+        // to find the right queue, then mutate it once found.
         for &queue_ptr in &self.queues {
             unsafe {
-                let queue = &mut *queue_ptr;
-                if queue.param_id == param_id {
-                    queue.add_value(sample_offset, value);
+                // Only read param_id to check if this is the right queue
+                let param_id_matches = (*queue_ptr).param_id == param_id;
+                if param_id_matches {
+                    // Now mutate the queue we found
+                    (*queue_ptr).add_value(sample_offset, value);
                     return;
                 }
             }
@@ -299,11 +327,30 @@ unsafe impl Send for ParameterChanges {}
 
 #[allow(unsafe_code)]
 unsafe extern "C" fn query_interface_changes(
-    _this: *mut c_void,
-    _iid: *const [u8; 16],
-    _obj: *mut *mut c_void,
+    this: *mut c_void,
+    iid: *const [u8; 16],
+    obj: *mut *mut c_void,
 ) -> i32 {
-    K_RESULT_FALSE
+    if iid.is_null() || obj.is_null() {
+        return K_RESULT_FALSE;
+    }
+
+    unsafe {
+        let requested_iid = &*iid;
+
+        // Support FUnknown (base interface)
+        if requested_iid == &FUNKNOWN_IID {
+            *obj = this;
+            // Add reference for the returned interface
+            let changes = &*(this.cast::<ParameterChanges>());
+            changes.ref_count.fetch_add(1, Ordering::Relaxed);
+            return K_RESULT_OK;
+        }
+
+        // Don't support other interfaces
+        *obj = std::ptr::null_mut();
+        K_RESULT_FALSE
+    }
 }
 
 #[allow(unsafe_code)]
@@ -337,7 +384,8 @@ unsafe extern "C" fn release_changes(this: *mut c_void) -> u32 {
 unsafe extern "C" fn get_parameter_count_changes(this: *mut c_void) -> i32 {
     unsafe {
         let changes = &*(this.cast::<ParameterChanges>());
-        changes.queues.len() as i32
+        // Clamp to i32::MAX to avoid overflow
+        changes.queues.len().min(i32::MAX as usize) as i32
     }
 }
 

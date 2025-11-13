@@ -33,7 +33,9 @@ struct Args {
     block_size: usize,
 
     /// Set plugin parameters (format: "ParamName=value")
-    /// Can be specified multiple times
+    /// Values should be in the parameter's natural range (e.g., 0.0-1.0 for normalized params).
+    /// The value will be clamped to the parameter's min/max range if out of bounds.
+    /// Can be specified multiple times.
     #[arg(long = "param")]
     params: Vec<String>,
 
