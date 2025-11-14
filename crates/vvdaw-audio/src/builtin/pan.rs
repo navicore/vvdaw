@@ -200,7 +200,7 @@ mod tests {
         assert!((right - 0.707).abs() < 0.01);
 
         // Verify constant power: L² + R² ≈ 1
-        let power = left * left + right * right;
+        let power = left.mul_add(left, right * right);
         assert!((power - 1.0).abs() < 0.01);
 
         // At full left
@@ -242,8 +242,8 @@ mod tests {
 
         // At center pan, both outputs should have equal mix of both inputs
         let (left_gain, right_gain) = PanProcessor::calculate_gains(0.0);
-        let expected_left = 1.0 * left_gain + 0.5 * left_gain;
-        let expected_right = 1.0 * right_gain + 0.5 * right_gain;
+        let expected_left = 1.0_f32.mul_add(left_gain, 0.5 * left_gain);
+        let expected_right = 1.0_f32.mul_add(right_gain, 0.5 * right_gain);
 
         for sample in &left_out {
             assert!((*sample - expected_left).abs() < 0.01);
