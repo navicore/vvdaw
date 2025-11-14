@@ -8,6 +8,16 @@ use vvdaw_plugin::{AudioBuffer, EventBuffer, ParameterInfo, Plugin, PluginError,
 ///
 /// Multiplies all audio samples by a gain factor.
 /// Real-time safe using atomic operations for parameter changes.
+///
+/// ## Parameter Range
+///
+/// Gain: 0.0 to 2.0 (linear)
+/// - 0.0 = silence (−∞ dB)
+/// - 1.0 = unity gain (0 dB, default)
+/// - 2.0 = double amplitude (+6 dB)
+///
+/// The range allows for both attenuation and moderate boost.
+/// Limited to 2.0 to prevent excessive clipping in typical use.
 pub struct GainProcessor {
     /// Gain value stored as f32 bits in an atomic (for thread-safe access)
     gain: AtomicU32,
@@ -78,14 +88,30 @@ impl Plugin for GainProcessor {
             )));
         }
 
+        // Validate buffer lengths
+        for ch in 0..2 {
+            if audio.inputs[ch].len() < audio.frames {
+                return Err(PluginError::ProcessingFailed(format!(
+                    "Input channel {} has {} samples, need at least {}",
+                    ch,
+                    audio.inputs[ch].len(),
+                    audio.frames
+                )));
+            }
+            if audio.outputs[ch].len() < audio.frames {
+                return Err(PluginError::ProcessingFailed(format!(
+                    "Output channel {} has {} samples, need at least {}",
+                    ch,
+                    audio.outputs[ch].len(),
+                    audio.frames
+                )));
+            }
+        }
+
         // Copy input to output and apply gain
         for ch in 0..2 {
-            for (input_sample, output_sample) in audio.inputs[ch]
-                .iter()
-                .zip(audio.outputs[ch].iter_mut())
-                .take(audio.frames)
-            {
-                *output_sample = *input_sample * gain;
+            for i in 0..audio.frames {
+                audio.outputs[ch][i] = audio.inputs[ch][i] * gain;
             }
         }
 

@@ -1,14 +1,33 @@
-//! Pan processor - stereo panning control.
+//! Pan processor - stereo balance control.
 
 use std::f32::consts::FRAC_PI_2;
 use std::sync::atomic::{AtomicU32, Ordering};
 use vvdaw_core::SampleRate;
 use vvdaw_plugin::{AudioBuffer, EventBuffer, ParameterInfo, Plugin, PluginError, PluginInfo};
 
-/// Stereo pan processor using constant-power panning
+/// Stereo balance processor using constant-power panning
 ///
-/// Constant-power panning maintains perceived loudness as the sound moves
-/// across the stereo field by ensuring that L² + R² = constant.
+/// This is a **stereo balance control**, not a mono-to-stereo panner. It adjusts
+/// the relative levels of the left and right channels of an existing stereo signal.
+///
+/// ## Behavior
+///
+/// - **Pan = -1.0 (Full Left)**: Left channel at full volume (1.0), right channel silent (0.0)
+/// - **Pan = 0.0 (Center)**: Both channels at ~0.707 gain (constant-power center)
+/// - **Pan = +1.0 (Full Right)**: Left channel silent (0.0), right channel at full volume (1.0)
+///
+/// Each output channel is affected independently:
+/// - Left output = Left input × `left_gain`
+/// - Right output = Right input × `right_gain`
+///
+/// This maintains the stereo image of the input signal while shifting the balance.
+/// Constant-power panning ensures L² + R² = 1, maintaining perceived loudness.
+///
+/// ## Not Implemented
+///
+/// This does NOT implement:
+/// - Mono-to-stereo panning (use a dedicated stereo widener)
+/// - True stereo panning that maintains stereo width while moving position
 pub struct PanProcessor {
     /// Pan position stored as f32 bits (-1.0 = full left, 0.0 = center, 1.0 = full right)
     pan: AtomicU32,
@@ -98,6 +117,26 @@ impl Plugin for PanProcessor {
                 "Pan processor requires exactly 2 outputs (stereo), got {}",
                 audio.outputs.len()
             )));
+        }
+
+        // Validate buffer lengths
+        for ch in 0..2 {
+            if audio.inputs[ch].len() < audio.frames {
+                return Err(PluginError::ProcessingFailed(format!(
+                    "Input channel {} has {} samples, need at least {}",
+                    ch,
+                    audio.inputs[ch].len(),
+                    audio.frames
+                )));
+            }
+            if audio.outputs[ch].len() < audio.frames {
+                return Err(PluginError::ProcessingFailed(format!(
+                    "Output channel {} has {} samples, need at least {}",
+                    ch,
+                    audio.outputs[ch].len(),
+                    audio.frames
+                )));
+            }
         }
 
         let left_in = audio.inputs[0];

@@ -9,10 +9,27 @@ use vvdaw_plugin::{AudioBuffer, EventBuffer, ParameterInfo, Plugin, PluginError,
 /// Mixes two stereo inputs to a single stereo output with individual
 /// input gains and a master output gain.
 ///
-/// Parameters:
-/// - 0: Input 1 gain (0.0 to 2.0)
-/// - 1: Input 2 gain (0.0 to 2.0)
-/// - 2: Master gain (0.0 to 2.0)
+/// ## Signal Flow
+///
+/// ```text
+/// Input 1 (L/R) --[gain 1]--\
+///                             >--[master]-->  Output (L/R)
+/// Input 2 (L/R) --[gain 2]--/
+/// ```
+///
+/// ## Parameters
+///
+/// All gains range from 0.0 to 2.0 (linear):
+/// - **0**: Input 1 gain (0.0 to 2.0, default 1.0)
+/// - **1**: Input 2 gain (0.0 to 2.0, default 1.0)
+/// - **2**: Master gain (0.0 to 2.0, default 1.0)
+///
+/// Each parameter:
+/// - 0.0 = silence (−∞ dB)
+/// - 1.0 = unity gain (0 dB)
+/// - 2.0 = double amplitude (+6 dB)
+///
+/// Range limited to 2.0 to prevent excessive clipping in typical use.
 pub struct MixerProcessor {
     /// Input 1 gain stored as f32 bits
     input1_gain: AtomicU32,
@@ -109,6 +126,28 @@ impl Plugin for MixerProcessor {
                 "Mixer processor requires exactly 2 outputs (1 stereo), got {}",
                 audio.outputs.len()
             )));
+        }
+
+        // Validate buffer lengths
+        for ch in 0..4 {
+            if audio.inputs[ch].len() < audio.frames {
+                return Err(PluginError::ProcessingFailed(format!(
+                    "Input channel {} has {} samples, need at least {}",
+                    ch,
+                    audio.inputs[ch].len(),
+                    audio.frames
+                )));
+            }
+        }
+        for ch in 0..2 {
+            if audio.outputs[ch].len() < audio.frames {
+                return Err(PluginError::ProcessingFailed(format!(
+                    "Output channel {} has {} samples, need at least {}",
+                    ch,
+                    audio.outputs[ch].len(),
+                    audio.frames
+                )));
+            }
         }
 
         // Input 1: channels 0-1 (L/R)
