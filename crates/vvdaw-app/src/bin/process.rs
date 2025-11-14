@@ -13,6 +13,12 @@ use vvdaw_audio::session::Session;
 use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin};
 use vvdaw_vst3::MultiProcessPlugin;
 
+/// Maximum block size (same as `AudioGraph::MAX_BLOCK_SIZE`)
+const MAX_BLOCK_SIZE: usize = 8192;
+
+/// Maximum supported channels
+const MAX_CHANNELS: usize = 8;
+
 /// Offline WAV file processor
 #[derive(Parser, Debug)]
 #[command(name = "vvdaw-process")]
@@ -30,9 +36,14 @@ struct Args {
     #[arg(short, long, required_unless_present_any = ["inspect", "session"])]
     plugin: Option<PathBuf>,
 
-    /// Processing block size (default: 512)
+    /// Processing block size (default: 512, max: 8192)
     #[arg(short, long, default_value_t = 512)]
     block_size: usize,
+
+    /// Sample rate for session saving (default: 48000 Hz)
+    /// Only used with --save-session when no input file is specified
+    #[arg(long, default_value_t = 48000)]
+    sample_rate: u32,
 
     /// Set plugin parameters (format: "ParamName=value")
     /// Values should be in the parameter's natural range (e.g., 0.0-1.0 for normalized params).
@@ -210,16 +221,27 @@ fn save_session_mode(args: &Args) -> Result<()> {
         .as_ref()
         .context("--save-session path required")?;
 
+    // Validate block size
+    if args.block_size > MAX_BLOCK_SIZE {
+        anyhow::bail!(
+            "Block size {} exceeds maximum {}",
+            args.block_size,
+            MAX_BLOCK_SIZE
+        );
+    }
+
     tracing::info!("Creating session from plugin configuration");
     tracing::info!("Plugin: {}", plugin_path.display());
     tracing::info!("Session: {}", session_path.display());
+    tracing::info!("Sample rate: {} Hz", args.sample_rate);
+    tracing::info!("Block size: {} frames", args.block_size);
 
     // Load plugin
     let mut plugin =
         MultiProcessPlugin::spawn(plugin_path).context("Failed to spawn plugin subprocess")?;
 
     plugin
-        .initialize(48000, args.block_size)
+        .initialize(args.sample_rate, args.block_size)
         .context("Failed to initialize plugin")?;
 
     tracing::info!("Plugin loaded: {}", plugin.info().name);
@@ -231,7 +253,7 @@ fn save_session_mode(args: &Args) -> Result<()> {
     }
 
     // Create graph with single plugin
-    let mut graph = AudioGraph::with_config(48000, args.block_size);
+    let mut graph = AudioGraph::with_config(args.sample_rate, args.block_size);
     let source = PluginSource::Vst3 {
         path: plugin_path.clone(),
     };
@@ -271,6 +293,11 @@ fn process_with_session(args: &Args) -> Result<()> {
     tracing::info!("Output:  {}", output.display());
     tracing::info!("Session: {}", session_path.display());
 
+    // Validate input file exists
+    if !input.exists() {
+        anyhow::bail!("Input file does not exist: {}", input.display());
+    }
+
     // Load session
     let session = Session::load(session_path).context("Failed to load session")?;
 
@@ -281,6 +308,15 @@ fn process_with_session(args: &Args) -> Result<()> {
         session.block_size
     );
     tracing::info!("  {} node(s) in graph", session.graph.nodes.len());
+
+    // Validate session block size
+    if session.block_size > MAX_BLOCK_SIZE {
+        anyhow::bail!(
+            "Session block size {} exceeds maximum {}",
+            session.block_size,
+            MAX_BLOCK_SIZE
+        );
+    }
 
     // Read input WAV
     tracing::info!("Reading input WAV file...");
@@ -296,9 +332,23 @@ fn process_with_session(args: &Args) -> Result<()> {
         spec.sample_format
     );
 
+    // Validate WAV sample rate matches session
+    if spec.sample_rate != session.sample_rate {
+        anyhow::bail!(
+            "WAV file sample rate ({} Hz) does not match session sample rate ({} Hz)",
+            spec.sample_rate,
+            session.sample_rate
+        );
+    }
+
+    // Validate channel count
+    let channel_count = spec.channels as usize;
+    if channel_count > MAX_CHANNELS {
+        anyhow::bail!("WAV file has {channel_count} channels, maximum supported is {MAX_CHANNELS}");
+    }
+
     // Read samples
     let samples = read_wav_samples(&mut reader, &spec)?;
-    let channel_count = spec.channels as usize;
 
     // Reconstruct graph from session
     tracing::info!("Reconstructing audio graph from session...");
@@ -318,10 +368,10 @@ fn process_with_session(args: &Args) -> Result<()> {
 
     tracing::info!("Graph reconstructed with {} node(s)", graph.nodes().count());
 
-    // Process audio
+    // Process audio (use session's block_size, not args)
     tracing::info!("Processing audio...");
     let output_samples =
-        process_audio_with_graph(&samples, channel_count, &mut graph, args.block_size);
+        process_audio_with_graph(&samples, channel_count, &mut graph, session.block_size);
 
     // Write output
     tracing::info!("Writing output WAV file...");
@@ -352,7 +402,21 @@ fn process_with_plugin(args: &Args) -> Result<()> {
     tracing::info!("Input:  {}", input.display());
     tracing::info!("Output: {}", output.display());
     tracing::info!("Plugin: {}", plugin_path.display());
-    tracing::info!("Block size: {}", args.block_size);
+    tracing::info!("Block size: {} frames", args.block_size);
+
+    // Validate block size
+    if args.block_size > MAX_BLOCK_SIZE {
+        anyhow::bail!(
+            "Block size {} exceeds maximum {}",
+            args.block_size,
+            MAX_BLOCK_SIZE
+        );
+    }
+
+    // Validate input file exists
+    if !input.exists() {
+        anyhow::bail!("Input file does not exist: {}", input.display());
+    }
 
     // Read input WAV file
     tracing::info!("Reading input WAV file...");
@@ -368,9 +432,14 @@ fn process_with_plugin(args: &Args) -> Result<()> {
         spec.sample_format
     );
 
+    // Validate channel count
+    let channel_count = spec.channels as usize;
+    if channel_count > MAX_CHANNELS {
+        anyhow::bail!("WAV file has {channel_count} channels, maximum supported is {MAX_CHANNELS}");
+    }
+
     // Read samples
     let samples = read_wav_samples(&mut reader, &spec)?;
-    let channel_count = spec.channels as usize;
     let frame_count = samples.len() / channel_count;
 
     tracing::info!("Read {} frames ({} samples)", frame_count, samples.len());
@@ -405,7 +474,7 @@ fn process_with_plugin(args: &Args) -> Result<()> {
     tracing::info!("Writing output WAV file...");
     write_wav(output, &output_samples, spec)?;
 
-    tracing::info!("Done! Output written to {:?}", output);
+    tracing::info!("✓ Done! Output written to {}", output.display());
 
     Ok(())
 }
