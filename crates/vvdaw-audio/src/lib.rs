@@ -3,6 +3,7 @@
 //! This crate provides the audio graph, audio thread management,
 //! and integration with cpal for audio I/O.
 
+pub mod builtin;
 pub mod engine;
 pub mod graph;
 pub mod session;
