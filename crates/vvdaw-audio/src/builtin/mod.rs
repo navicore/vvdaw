@@ -5,6 +5,8 @@
 //! but have zero overhead (no IPC, no FFI, just direct vtable dispatch).
 
 pub mod gain;
+pub mod mixer;
+pub mod pan;
 
 use vvdaw_plugin::Plugin;
 
@@ -22,6 +24,8 @@ use vvdaw_plugin::Plugin;
 pub fn create_builtin(name: &str) -> Option<Box<dyn Plugin>> {
     match name {
         "gain" => Some(Box::new(gain::GainProcessor::default())),
+        "mixer" => Some(Box::new(mixer::MixerProcessor::default())),
+        "pan" => Some(Box::new(pan::PanProcessor::default())),
         _ => None,
     }
 }
@@ -33,6 +37,18 @@ mod tests {
     #[test]
     fn test_create_gain() {
         let plugin = create_builtin("gain");
+        assert!(plugin.is_some());
+    }
+
+    #[test]
+    fn test_create_mixer() {
+        let plugin = create_builtin("mixer");
+        assert!(plugin.is_some());
+    }
+
+    #[test]
+    fn test_create_pan() {
+        let plugin = create_builtin("pan");
         assert!(plugin.is_some());
     }
 
