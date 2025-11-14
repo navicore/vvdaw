@@ -8,6 +8,7 @@ use clap::Parser;
 use hound::{WavReader, WavWriter};
 use std::path::PathBuf;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use vvdaw_audio::builtin;
 use vvdaw_audio::graph::{AudioGraph, PluginSource};
 use vvdaw_audio::session::Session;
 use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin};
@@ -356,6 +357,11 @@ fn process_with_session(args: &Args) -> Result<()> {
         .to_graph(|plugin_spec| {
             use vvdaw_audio::session::PluginSpec;
             match plugin_spec {
+                PluginSpec::Builtin { name, .. } => {
+                    tracing::info!("  Loading built-in: {}", name);
+                    builtin::create_builtin(name)
+                        .ok_or_else(|| format!("Unknown built-in processor: {name}"))
+                }
                 PluginSpec::Vst3 { path, .. } => {
                     tracing::info!("  Loading plugin: {}", path.display());
                     let plugin = MultiProcessPlugin::spawn(path)

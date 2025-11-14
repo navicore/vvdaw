@@ -9,6 +9,9 @@ use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin, PluginError};
 /// Information about where a plugin was loaded from
 #[derive(Debug, Clone)]
 pub enum PluginSource {
+    /// Built-in processor (implemented in Rust)
+    Builtin { name: String },
+
     /// VST3 plugin loaded from a bundle path
     Vst3 { path: PathBuf },
 

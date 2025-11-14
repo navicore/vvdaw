@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use vvdaw_audio::builtin;
 use vvdaw_audio::graph::{AudioGraph, PluginSource};
 use vvdaw_audio::session::{PluginSpec, Session};
 use vvdaw_plugin::Plugin;
@@ -94,6 +95,11 @@ fn main() -> Result<()> {
     println!("\nStep 6: Reconstructing audio graph from session...");
     let reconstructed_graph = loaded_session
         .to_graph(|spec| match spec {
+            PluginSpec::Builtin { name, .. } => {
+                println!("  Loading built-in: {name}");
+                builtin::create_builtin(name)
+                    .ok_or_else(|| format!("Unknown built-in processor: {name}"))
+            }
             PluginSpec::Vst3 { path, .. } => {
                 println!("  Loading plugin from {}", path.display());
                 let plugin = MultiProcessPlugin::spawn(path)

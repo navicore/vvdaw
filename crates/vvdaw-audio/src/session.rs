@@ -13,6 +13,19 @@ use vvdaw_plugin::Plugin;
 /// Specification for how to instantiate a plugin
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PluginSpec {
+    /// Built-in processor (implemented in Rust)
+    ///
+    /// These are portable across all platforms since they're compiled into the binary.
+    /// No validation needed as the name is just a string key.
+    Builtin {
+        /// Name of the built-in processor (e.g., "gain", "pan", "mixer")
+        name: String,
+
+        /// Parameter values (parameter ID -> normalized value 0.0-1.0)
+        #[serde(default)]
+        parameters: HashMap<u32, f64>,
+    },
+
     /// VST3 plugin loaded from a bundle path
     ///
     /// # Security Warning
@@ -36,22 +49,28 @@ pub enum PluginSpec {
     },
     // Future plugin types:
     // Clap { path: PathBuf, parameters: HashMap<u32, f64> },
-    // BuiltIn { plugin_type: String, config: serde_json::Value },
 }
 
 impl PluginSpec {
     /// Validate the plugin specification
     ///
     /// Checks for:
-    /// - Absolute paths (relative paths may not resolve correctly)
-    /// - Expected file extensions (.vst3)
-    /// - No directory traversal attempts (..)
+    /// - Built-ins: Name is non-empty
+    /// - VST3: Absolute paths, expected file extensions, no directory traversal
     ///
     /// # Errors
     ///
     /// Returns error if validation fails
     pub fn validate(&self) -> Result<(), SessionError> {
         match self {
+            Self::Builtin { name, .. } => {
+                if name.is_empty() {
+                    return Err(SessionError::InvalidData(
+                        "Built-in processor name cannot be empty".to_string(),
+                    ));
+                }
+                Ok(())
+            }
             Self::Vst3 { path, .. } => {
                 // Check if path is absolute
                 if !path.is_absolute() {
@@ -225,6 +244,10 @@ impl Session {
 
             // Convert plugin source to spec
             let plugin_spec = match node.source() {
+                PluginSource::Builtin { name } => PluginSpec::Builtin {
+                    name: name.clone(),
+                    parameters,
+                },
                 PluginSource::Vst3 { path } => PluginSpec::Vst3 {
                     path: path.clone(),
                     parameters,
@@ -276,8 +299,9 @@ impl Session {
 
         // Create all nodes
         for session_node in &self.graph.nodes {
-            // Get plugin path for error messages
+            // Get plugin identifier for error messages
             let plugin_path = match &session_node.plugin {
+                PluginSpec::Builtin { name, .. } => format!("builtin:{name}"),
                 PluginSpec::Vst3 { path, .. } => path.display().to_string(),
             };
 
@@ -291,6 +315,7 @@ impl Session {
 
             // Determine plugin source for the graph node
             let source = match &session_node.plugin {
+                PluginSpec::Builtin { name, .. } => PluginSource::Builtin { name: name.clone() },
                 PluginSpec::Vst3 { path, .. } => PluginSource::Vst3 { path: path.clone() },
             };
 
@@ -306,7 +331,11 @@ impl Session {
             node_id_map.insert(session_node.id, graph_id);
 
             // Restore parameters
-            let PluginSpec::Vst3 { parameters, .. } = &session_node.plugin;
+            let parameters = match &session_node.plugin {
+                PluginSpec::Builtin { parameters, .. } | PluginSpec::Vst3 { parameters, .. } => {
+                    parameters
+                }
+            };
             for (&param_id, &value) in parameters {
                 graph
                     .set_node_parameter(graph_id, param_id, value as f32)
