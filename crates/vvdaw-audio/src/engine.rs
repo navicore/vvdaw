@@ -93,7 +93,15 @@ impl AudioEngine {
                             // Receive the plugin instance from the plugin channel
                             if let Ok(plugin) = channels.plugin_rx.try_recv() {
                                 // Ignore errors - can't log in audio callback
-                                let _ = graph.add_node(plugin);
+
+                                // LIMITATION: Plugin source is Unknown when added via engine
+                                // This means plugins added through the audio engine won't be
+                                // serializable in sessions. To fix this, we would need to:
+                                // 1. Change PluginInstance to include PluginSource
+                                // 2. Update all code that sends plugins through channels
+                                // 3. Store source info when loading plugins in UI thread
+                                // For now, session save will error if graph contains Unknown sources.
+                                let _ = graph.add_node(plugin, crate::graph::PluginSource::Unknown);
                             }
                         }
                         AudioCommand::RemoveNode(node_id) => {

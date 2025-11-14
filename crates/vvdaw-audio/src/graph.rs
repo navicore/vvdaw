@@ -2,8 +2,19 @@
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::path::PathBuf;
 use vvdaw_core::{Frames, Sample, SampleRate};
 use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin, PluginError};
+
+/// Information about where a plugin was loaded from
+#[derive(Debug, Clone)]
+pub enum PluginSource {
+    /// VST3 plugin loaded from a bundle path
+    Vst3 { path: PathBuf },
+
+    /// Unknown or untracked source (for backward compatibility)
+    Unknown,
+}
 
 /// Maximum number of channels supported per node
 ///
@@ -31,6 +42,8 @@ pub struct AudioNode {
     /// Cached input/output channel counts
     inputs: usize,
     outputs: usize,
+    /// Where this plugin was loaded from (for serialization)
+    source: PluginSource,
 }
 
 impl AudioNode {
@@ -50,6 +63,18 @@ impl AudioNode {
     #[must_use]
     pub fn outputs(&self) -> usize {
         self.outputs
+    }
+
+    /// Get the plugin source information
+    #[must_use]
+    pub fn source(&self) -> &PluginSource {
+        &self.source
+    }
+
+    /// Get a reference to the plugin
+    #[must_use]
+    pub fn plugin(&self) -> &dyn Plugin {
+        &*self.plugin
     }
 }
 
@@ -149,7 +174,11 @@ impl AudioGraph {
     /// - Channel counts exceeding [`MAX_CHANNELS`] will be warned about but allowed.
     ///   Excess channels will be silently truncated during processing.
     /// - Current block size is validated against [`MAX_BLOCK_SIZE`].
-    pub fn add_node(&mut self, mut plugin: Box<dyn Plugin>) -> Result<usize, PluginError> {
+    pub fn add_node(
+        &mut self,
+        mut plugin: Box<dyn Plugin>,
+        source: PluginSource,
+    ) -> Result<usize, PluginError> {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -192,6 +221,7 @@ impl AudioGraph {
                 plugin,
                 inputs,
                 outputs,
+                source,
             },
         );
 
@@ -277,6 +307,47 @@ impl AudioGraph {
             // Update processing order to reflect removed dependency
             self.update_processing_order();
         }
+    }
+
+    /// Get an iterator over all nodes in the graph
+    pub fn nodes(&self) -> impl Iterator<Item = &AudioNode> {
+        self.nodes.values()
+    }
+
+    /// Get an iterator over all connections in the graph
+    pub fn connections(&self) -> impl Iterator<Item = &Connection> + '_ {
+        self.connections.iter()
+    }
+
+    /// Get the current sample rate
+    #[must_use]
+    pub fn sample_rate(&self) -> SampleRate {
+        self.sample_rate
+    }
+
+    /// Get the current block size
+    #[must_use]
+    pub fn block_size(&self) -> Frames {
+        self.block_size
+    }
+
+    /// Set a parameter on a specific node
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the node doesn't exist or parameter setting fails
+    pub fn set_node_parameter(
+        &mut self,
+        node_id: usize,
+        param_id: u32,
+        value: f32,
+    ) -> Result<(), PluginError> {
+        let node = self
+            .nodes
+            .get_mut(&node_id)
+            .ok_or_else(|| PluginError::InvalidParameter(format!("Node {node_id} not found")))?;
+
+        node.plugin.set_parameter(param_id, value)
     }
 
     /// Allocate input and output buffers for a node
@@ -646,7 +717,7 @@ mod tests {
     fn test_single_node_topological_sort() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         let result = graph.topological_sort();
@@ -658,13 +729,13 @@ mod tests {
     fn test_linear_chain_topological_sort() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         graph.connect(node_a, node_b).unwrap();
@@ -687,16 +758,16 @@ mod tests {
     fn test_parallel_paths_topological_sort() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_d = graph
-            .add_node(Box::new(DummyPlugin::new("D", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("D", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         // A -> B -> D
@@ -728,13 +799,13 @@ mod tests {
     fn test_disconnected_nodes_topological_sort() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         // No connections - all nodes independent
@@ -753,13 +824,13 @@ mod tests {
     fn test_simple_cycle_detection() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         // Create cycle: A -> B -> C -> A
@@ -782,7 +853,7 @@ mod tests {
     fn test_self_loop_cycle_detection() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         // Create self-loop: A -> A
@@ -800,16 +871,16 @@ mod tests {
     fn test_partial_cycle_detection() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_d = graph
-            .add_node(Box::new(DummyPlugin::new("D", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("D", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         // A -> B -> C -> B (cycle between B and C)
@@ -839,13 +910,13 @@ mod tests {
         assert_eq!(graph.processing_order.len(), 0);
 
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         assert_eq!(graph.processing_order.len(), 1);
         assert_eq!(graph.processing_order[0], node_a);
 
         let _node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         assert_eq!(graph.processing_order.len(), 2);
     }
@@ -854,10 +925,10 @@ mod tests {
     fn test_processing_order_updates_on_remove() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         graph.connect(node_a, node_b).unwrap();
@@ -873,13 +944,13 @@ mod tests {
     fn test_processing_order_respects_dependencies() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         // Connect in reverse order to test sorting
@@ -911,10 +982,10 @@ mod tests {
     fn test_cycle_fallback_to_linear_order() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         // Create cycle
@@ -934,10 +1005,10 @@ mod tests {
     fn test_connection_management() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         // Test connect
@@ -959,13 +1030,13 @@ mod tests {
     fn test_remove_node_removes_connections() {
         let mut graph = AudioGraph::new();
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         graph.connect(node_a, node_b).unwrap();
@@ -997,7 +1068,10 @@ mod tests {
         // Create 100 nodes
         for i in 0..100 {
             let node = graph
-                .add_node(Box::new(DummyPlugin::new(&format!("Node{i}"), 2, 2)))
+                .add_node(
+                    Box::new(DummyPlugin::new(&format!("Node{i}"), 2, 2)),
+                    PluginSource::Unknown,
+                )
                 .unwrap();
             nodes.push(node);
         }
@@ -1065,7 +1139,10 @@ mod tests {
         // Create 1000 nodes
         for i in 0..1000 {
             let node = graph
-                .add_node(Box::new(DummyPlugin::new(&format!("N{i}"), 2, 2)))
+                .add_node(
+                    Box::new(DummyPlugin::new(&format!("N{i}"), 2, 2)),
+                    PluginSource::Unknown,
+                )
                 .unwrap();
             nodes.push(node);
         }
@@ -1113,7 +1190,10 @@ mod tests {
         // Test: system_input -> node -> system_output
         let mut graph = AudioGraph::with_config(48000, 64);
         let _node = graph
-            .add_node(Box::new(DummyPlugin::new("PassThrough", 2, 2)))
+            .add_node(
+                Box::new(DummyPlugin::new("PassThrough", 2, 2)),
+                PluginSource::Unknown,
+            )
             .unwrap();
 
         // Create test input
@@ -1138,13 +1218,13 @@ mod tests {
         // Test: system_input -> A -> B -> C -> system_output
         let mut graph = AudioGraph::with_config(48000, 64);
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         graph.connect(node_a, node_b).unwrap();
@@ -1174,13 +1254,13 @@ mod tests {
         // Both A and B outputs should be mixed (summed) into C's input
         let mut graph = AudioGraph::with_config(48000, 64);
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         graph.connect(node_a, node_c).unwrap();
@@ -1210,13 +1290,13 @@ mod tests {
         // A's output should be routed to both B and C
         let mut graph = AudioGraph::with_config(48000, 64);
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         graph.connect(node_a, node_b).unwrap();
@@ -1247,16 +1327,16 @@ mod tests {
         //           D
         let mut graph = AudioGraph::with_config(48000, 64);
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("C", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("C", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_d = graph
-            .add_node(Box::new(DummyPlugin::new("D", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("D", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         graph.connect(node_a, node_b).unwrap();
@@ -1288,10 +1368,10 @@ mod tests {
         // Both should output to system_output (mixed)
         let mut graph = AudioGraph::with_config(48000, 64);
         let _node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let _node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         let input_data = [vec![1.0_f32; 64], vec![2.0_f32; 64]];
@@ -1315,10 +1395,10 @@ mod tests {
         //       Both have outgoing connections, so no output to system
         let mut graph = AudioGraph::with_config(48000, 64);
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("A", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("A", 2, 2)), PluginSource::Unknown)
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("B", 2, 2)))
+            .add_node(Box::new(DummyPlugin::new("B", 2, 2)), PluginSource::Unknown)
             .unwrap();
 
         graph.connect(node_a, node_b).unwrap();
@@ -1349,7 +1429,10 @@ mod tests {
         // Second channel should be silent (not panic)
         let mut graph = AudioGraph::with_config(48000, 64);
         let _node = graph
-            .add_node(Box::new(DummyPlugin::new("StereoNode", 2, 2)))
+            .add_node(
+                Box::new(DummyPlugin::new("StereoNode", 2, 2)),
+                PluginSource::Unknown,
+            )
             .unwrap();
 
         // Create 1-channel input
@@ -1375,7 +1458,10 @@ mod tests {
         // Node should only see first 2 channels
         let mut graph = AudioGraph::with_config(48000, 64);
         let _node = graph
-            .add_node(Box::new(DummyPlugin::new("StereoNode", 2, 2)))
+            .add_node(
+                Box::new(DummyPlugin::new("StereoNode", 2, 2)),
+                PluginSource::Unknown,
+            )
             .unwrap();
 
         // Create 4-channel input
@@ -1405,7 +1491,10 @@ mod tests {
         // Only first 2 channels should be written
         let mut graph = AudioGraph::with_config(48000, 64);
         let _node = graph
-            .add_node(Box::new(DummyPlugin::new("QuadNode", 4, 4)))
+            .add_node(
+                Box::new(DummyPlugin::new("QuadNode", 4, 4)),
+                PluginSource::Unknown,
+            )
             .unwrap();
 
         // Create 4-channel input
@@ -1436,7 +1525,10 @@ mod tests {
         // Only first channel should have signal
         let mut graph = AudioGraph::with_config(48000, 64);
         let _node = graph
-            .add_node(Box::new(DummyPlugin::new("MonoNode", 1, 1)))
+            .add_node(
+                Box::new(DummyPlugin::new("MonoNode", 1, 1)),
+                PluginSource::Unknown,
+            )
             .unwrap();
 
         // Create 1-channel input
@@ -1469,10 +1561,16 @@ mod tests {
         // Node B should receive signal on first 2 channels, silence on others
         let mut graph = AudioGraph::with_config(48000, 64);
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("StereoNode", 2, 2)))
+            .add_node(
+                Box::new(DummyPlugin::new("StereoNode", 2, 2)),
+                PluginSource::Unknown,
+            )
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("QuadNode", 4, 4)))
+            .add_node(
+                Box::new(DummyPlugin::new("QuadNode", 4, 4)),
+                PluginSource::Unknown,
+            )
             .unwrap();
 
         graph.connect(node_a, node_b).unwrap();
@@ -1509,13 +1607,22 @@ mod tests {
         // Both A and B are input nodes (no incoming connections), so they both receive system_input
         let mut graph = AudioGraph::with_config(48000, 64);
         let node_a = graph
-            .add_node(Box::new(DummyPlugin::new("StereoNode", 2, 2)))
+            .add_node(
+                Box::new(DummyPlugin::new("StereoNode", 2, 2)),
+                PluginSource::Unknown,
+            )
             .unwrap();
         let node_b = graph
-            .add_node(Box::new(DummyPlugin::new("MonoNode", 1, 1)))
+            .add_node(
+                Box::new(DummyPlugin::new("MonoNode", 1, 1)),
+                PluginSource::Unknown,
+            )
             .unwrap();
         let node_c = graph
-            .add_node(Box::new(DummyPlugin::new("QuadNode", 4, 4)))
+            .add_node(
+                Box::new(DummyPlugin::new("QuadNode", 4, 4)),
+                PluginSource::Unknown,
+            )
             .unwrap();
 
         graph.connect(node_a, node_c).unwrap();

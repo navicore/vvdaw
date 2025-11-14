@@ -24,3 +24,8 @@ thiserror.workspace = true
 tracing.workspace = true
 dasp.workspace = true
 smallvec.workspace = true
+serde.workspace = true
+ron.workspace = true
+
+[dev-dependencies]
+tempfile = "3.13"

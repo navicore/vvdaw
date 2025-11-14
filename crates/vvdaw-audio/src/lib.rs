@@ -5,9 +5,11 @@
 
 pub mod engine;
 pub mod graph;
+pub mod session;
 
 pub use engine::AudioEngine;
 pub use graph::AudioGraph;
+pub use session::Session;
 
 use vvdaw_core::{Frames, SampleRate};
 
