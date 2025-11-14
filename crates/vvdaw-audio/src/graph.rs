@@ -331,6 +331,25 @@ impl AudioGraph {
         self.block_size
     }
 
+    /// Set a parameter on a specific node
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the node doesn't exist or parameter setting fails
+    pub fn set_node_parameter(
+        &mut self,
+        node_id: usize,
+        param_id: u32,
+        value: f32,
+    ) -> Result<(), PluginError> {
+        let node = self
+            .nodes
+            .get_mut(&node_id)
+            .ok_or_else(|| PluginError::InvalidParameter(format!("Node {node_id} not found")))?;
+
+        node.plugin.set_parameter(param_id, value)
+    }
+
     /// Allocate input and output buffers for a node
     fn allocate_node_buffer(
         &mut self,

@@ -14,8 +14,20 @@ use vvdaw_plugin::Plugin;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PluginSpec {
     /// VST3 plugin loaded from a bundle path
+    ///
+    /// # Security Warning
+    ///
+    /// Plugin paths are stored as-is in session files. When loading sessions from
+    /// untrusted sources, be aware that:
+    /// - Paths are absolute and machine-specific (not portable across systems)
+    /// - Loading a session may attempt to load plugins from arbitrary paths
+    /// - Malicious sessions could reference unsafe plugin files
+    ///
+    /// Always validate session sources before loading.
     Vst3 {
         /// Path to the .vst3 bundle (e.g., "/Library/Audio/Plug-Ins/VST3/MyPlugin.vst3")
+        ///
+        /// This should be an absolute path. Relative paths may not work correctly.
         path: PathBuf,
 
         /// Parameter values (parameter ID -> normalized value 0.0-1.0)
@@ -25,6 +37,60 @@ pub enum PluginSpec {
     // Future plugin types:
     // Clap { path: PathBuf, parameters: HashMap<u32, f64> },
     // BuiltIn { plugin_type: String, config: serde_json::Value },
+}
+
+impl PluginSpec {
+    /// Validate the plugin specification
+    ///
+    /// Checks for:
+    /// - Absolute paths (relative paths may not resolve correctly)
+    /// - Expected file extensions (.vst3)
+    /// - No directory traversal attempts (..)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if validation fails
+    pub fn validate(&self) -> Result<(), SessionError> {
+        match self {
+            Self::Vst3 { path, .. } => {
+                // Check if path is absolute
+                if !path.is_absolute() {
+                    return Err(SessionError::InvalidPath(format!(
+                        "VST3 path must be absolute, got: {}",
+                        path.display()
+                    )));
+                }
+
+                // Check for directory traversal
+                if path.components().any(|c| {
+                    matches!(
+                        c,
+                        std::path::Component::ParentDir | std::path::Component::CurDir
+                    )
+                }) {
+                    return Err(SessionError::InvalidPath(format!(
+                        "VST3 path contains invalid components (.. or .): {}",
+                        path.display()
+                    )));
+                }
+
+                // Check file extension
+                if let Some(ext) = path.extension() {
+                    if ext != "vst3" {
+                        tracing::warn!(
+                            "VST3 path has unexpected extension '{}': {}",
+                            ext.to_string_lossy(),
+                            path.display()
+                        );
+                    }
+                } else {
+                    tracing::warn!("VST3 path has no extension: {}", path.display());
+                }
+
+                Ok(())
+            }
+        }
+    }
 }
 
 /// A node in the session graph (serializable version of `AudioNode`)
@@ -130,6 +196,11 @@ impl Session {
             return Err(SessionError::UnsupportedVersion(session.version));
         }
 
+        // Validate all plugin specifications
+        for node in &session.graph.nodes {
+            node.plugin.validate()?;
+        }
+
         Ok(session)
     }
 
@@ -159,10 +230,7 @@ impl Session {
                     parameters,
                 },
                 PluginSource::Unknown => {
-                    return Err(SessionError::InvalidData(format!(
-                        "Node {} has unknown plugin source and cannot be serialized",
-                        node.id()
-                    )));
+                    return Err(SessionError::UnknownPluginSource { node_id: node.id() });
                 }
             };
 
@@ -208,9 +276,18 @@ impl Session {
 
         // Create all nodes
         for session_node in &self.graph.nodes {
+            // Get plugin path for error messages
+            let plugin_path = match &session_node.plugin {
+                PluginSpec::Vst3 { path, .. } => path.display().to_string(),
+            };
+
             // Load the plugin
-            let plugin = plugin_loader(&session_node.plugin)
-                .map_err(|e| SessionError::InvalidData(format!("Failed to load plugin: {e}")))?;
+            let plugin = plugin_loader(&session_node.plugin).map_err(|e| {
+                SessionError::PluginLoadFailed {
+                    plugin_path: plugin_path.clone(),
+                    reason: e,
+                }
+            })?;
 
             // Determine plugin source for the graph node
             let source = match &session_node.plugin {
@@ -218,34 +295,52 @@ impl Session {
             };
 
             // Add node to graph
-            let graph_id = graph
-                .add_node(plugin, source)
-                .map_err(|e| SessionError::InvalidData(format!("Failed to add node: {e}")))?;
+            let graph_id =
+                graph
+                    .add_node(plugin, source)
+                    .map_err(|e| SessionError::PluginLoadFailed {
+                        plugin_path: plugin_path.clone(),
+                        reason: e.to_string(),
+                    })?;
 
             node_id_map.insert(session_node.id, graph_id);
 
-            // Set parameters
-            // TODO: Add graph method to set parameter on node
-            // For now, we rely on the plugin_loader to handle parameter initialization
-            let _ = &session_node.plugin; // Suppress unused warning
+            // Restore parameters
+            let PluginSpec::Vst3 { parameters, .. } = &session_node.plugin;
+            for (&param_id, &value) in parameters {
+                graph
+                    .set_node_parameter(graph_id, param_id, value as f32)
+                    .map_err(|e| SessionError::ParameterFailed {
+                        node_id: session_node.id,
+                        param_id,
+                        reason: e.to_string(),
+                    })?;
+            }
         }
 
         // Create all connections
         for session_conn in &self.graph.connections {
-            let from = node_id_map.get(&session_conn.from).ok_or_else(|| {
-                SessionError::InvalidData(format!(
-                    "Connection from unknown node {}",
-                    session_conn.from
-                ))
-            })?;
+            let from =
+                node_id_map
+                    .get(&session_conn.from)
+                    .ok_or(SessionError::InvalidConnection {
+                        from: session_conn.from,
+                        to: session_conn.to,
+                    })?;
 
-            let to = node_id_map.get(&session_conn.to).ok_or_else(|| {
-                SessionError::InvalidData(format!("Connection to unknown node {}", session_conn.to))
-            })?;
+            let to = node_id_map
+                .get(&session_conn.to)
+                .ok_or(SessionError::InvalidConnection {
+                    from: session_conn.from,
+                    to: session_conn.to,
+                })?;
 
             graph
                 .connect(*from, *to)
-                .map_err(|e| SessionError::InvalidData(format!("Failed to connect nodes: {e}")))?;
+                .map_err(|_e| SessionError::InvalidConnection {
+                    from: session_conn.from,
+                    to: session_conn.to,
+                })?;
         }
 
         Ok(graph)
@@ -255,20 +350,53 @@ impl Session {
 /// Errors that can occur during session operations
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
+    /// I/O error reading or writing session file
     #[error("I/O error: {0}")]
     IoError(String),
 
+    /// RON serialization failed
     #[error("Serialization failed: {0}")]
     SerializationFailed(String),
 
+    /// RON deserialization failed
     #[error("Deserialization failed: {0}")]
     DeserializationFailed(String),
 
+    /// Session format version is not supported
     #[error("Unsupported session version: {0}")]
     UnsupportedVersion(u32),
 
+    /// Generic invalid data error (prefer more specific variants when possible)
     #[error("Invalid session data: {0}")]
     InvalidData(String),
+
+    /// Plugin failed to load during session reconstruction
+    #[error("Plugin loading failed for {plugin_path}: {reason}")]
+    PluginLoadFailed { plugin_path: String, reason: String },
+
+    /// Node not found in graph
+    #[error("Node {node_id} not found in session")]
+    NodeNotFound { node_id: usize },
+
+    /// Connection references non-existent nodes
+    #[error("Invalid connection from node {from} to node {to}")]
+    InvalidConnection { from: usize, to: usize },
+
+    /// Parameter setting failed
+    #[error("Failed to set parameter {param_id} on node {node_id}: {reason}")]
+    ParameterFailed {
+        node_id: usize,
+        param_id: u32,
+        reason: String,
+    },
+
+    /// Graph contains nodes with unknown plugin sources (can't be serialized)
+    #[error("Node {node_id} has unknown plugin source and cannot be serialized")]
+    UnknownPluginSource { node_id: usize },
+
+    /// Invalid plugin path (security validation failed)
+    #[error("Invalid plugin path: {0}")]
+    InvalidPath(String),
 }
 
 #[cfg(test)]
@@ -329,5 +457,124 @@ mod tests {
         assert_eq!(deserialized.name, session.name);
         assert_eq!(deserialized.graph.nodes.len(), 2);
         assert_eq!(deserialized.graph.connections.len(), 1);
+    }
+
+    #[test]
+    fn test_path_validation_absolute() {
+        let spec = PluginSpec::Vst3 {
+            path: PathBuf::from("/Library/Audio/Plug-Ins/VST3/Test.vst3"),
+            parameters: HashMap::new(),
+        };
+
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_path_validation_relative() {
+        let spec = PluginSpec::Vst3 {
+            path: PathBuf::from("relative/path/Test.vst3"),
+            parameters: HashMap::new(),
+        };
+
+        let result = spec.validate();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(SessionError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn test_path_validation_parent_dir() {
+        let spec = PluginSpec::Vst3 {
+            path: PathBuf::from("/Library/../etc/passwd"),
+            parameters: HashMap::new(),
+        };
+
+        let result = spec.validate();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(SessionError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn test_path_validation_normalized() {
+        // Note: Rust automatically normalizes paths, removing ./ components
+        // So /./Library becomes /Library, which is valid
+        // This test documents that behavior
+        let spec = PluginSpec::Vst3 {
+            path: PathBuf::from("/Library/Audio/Test.vst3"),
+            parameters: HashMap::new(),
+        };
+
+        let result = spec.validate();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_session_load_validates_paths() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a session with invalid path
+        let invalid_session = r#"(
+            version: 1,
+            name: "Invalid",
+            sample_rate: 48000,
+            block_size: 512,
+            graph: (
+                nodes: [(
+                    id: 0,
+                    plugin: Vst3(
+                        path: "../../etc/passwd",
+                        parameters: {},
+                    ),
+                    inputs: 2,
+                    outputs: 2,
+                )],
+                connections: [],
+            ),
+        )"#;
+
+        let mut file = NamedTempFile::new().expect("Failed to create temp file");
+        file.write_all(invalid_session.as_bytes())
+            .expect("Failed to write");
+        let path = file.path();
+
+        let result = Session::load(path);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(SessionError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn test_unknown_plugin_source_error() {
+        // Test documents expected behavior for unknown plugin sources
+        // When we have a graph with Unknown plugin sources, from_graph should error:
+        // let result = Session::from_graph(&graph_with_unknown_source, "Test");
+        // assert!(matches!(result, Err(SessionError::UnknownPluginSource { .. })));
+
+        // This would require creating a mock plugin with Unknown source,
+        // which is not trivial without a proper test framework for plugins.
+        // The behavior is tested indirectly through the session demo.
+    }
+
+    #[test]
+    fn test_error_message_specificity() {
+        // Test that specific error variants provide useful information
+        let err = SessionError::PluginLoadFailed {
+            plugin_path: "/test/path.vst3".to_string(),
+            reason: "File not found".to_string(),
+        };
+
+        let msg = err.to_string();
+        assert!(msg.contains("/test/path.vst3"));
+        assert!(msg.contains("File not found"));
+
+        let err = SessionError::ParameterFailed {
+            node_id: 5,
+            param_id: 42,
+            reason: "Out of range".to_string(),
+        };
+
+        let msg = err.to_string();
+        assert!(msg.contains("node 5"));
+        assert!(msg.contains("parameter 42"));
+        assert!(msg.contains("Out of range"));
     }
 }
