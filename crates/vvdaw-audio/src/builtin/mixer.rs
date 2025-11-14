@@ -45,32 +45,32 @@ impl Default for MixerProcessor {
 impl MixerProcessor {
     /// Get input 1 gain (thread-safe)
     fn get_input1_gain(&self) -> f32 {
-        f32::from_bits(self.input1_gain.load(Ordering::Relaxed))
+        f32::from_bits(self.input1_gain.load(Ordering::Acquire))
     }
 
     /// Set input 1 gain (thread-safe)
     fn set_input1_gain(&self, value: f32) {
-        self.input1_gain.store(value.to_bits(), Ordering::Relaxed);
+        self.input1_gain.store(value.to_bits(), Ordering::Release);
     }
 
     /// Get input 2 gain (thread-safe)
     fn get_input2_gain(&self) -> f32 {
-        f32::from_bits(self.input2_gain.load(Ordering::Relaxed))
+        f32::from_bits(self.input2_gain.load(Ordering::Acquire))
     }
 
     /// Set input 2 gain (thread-safe)
     fn set_input2_gain(&self, value: f32) {
-        self.input2_gain.store(value.to_bits(), Ordering::Relaxed);
+        self.input2_gain.store(value.to_bits(), Ordering::Release);
     }
 
     /// Get master gain (thread-safe)
     fn get_master_gain(&self) -> f32 {
-        f32::from_bits(self.master_gain.load(Ordering::Relaxed))
+        f32::from_bits(self.master_gain.load(Ordering::Acquire))
     }
 
     /// Set master gain (thread-safe)
     fn set_master_gain(&self, value: f32) {
-        self.master_gain.store(value.to_bits(), Ordering::Relaxed);
+        self.master_gain.store(value.to_bits(), Ordering::Release);
     }
 }
 
@@ -97,11 +97,18 @@ impl Plugin for MixerProcessor {
         let input2_gain = self.get_input2_gain();
         let master_gain = self.get_master_gain();
 
-        // Ensure we have 4 inputs (2 stereo inputs) and 2 outputs (1 stereo output)
-        if audio.inputs.len() < 4 || audio.outputs.len() < 2 {
-            return Err(PluginError::ProcessingFailed(
-                "Mixer processor requires 4 inputs (2 stereo) and 2 outputs (1 stereo)".to_string(),
-            ));
+        // Ensure we have exactly 4 inputs (2 stereo inputs) and 2 outputs (1 stereo output)
+        if audio.inputs.len() != 4 {
+            return Err(PluginError::ProcessingFailed(format!(
+                "Mixer processor requires exactly 4 inputs (2 stereo), got {}",
+                audio.inputs.len()
+            )));
+        }
+        if audio.outputs.len() != 2 {
+            return Err(PluginError::ProcessingFailed(format!(
+                "Mixer processor requires exactly 2 outputs (1 stereo), got {}",
+                audio.outputs.len()
+            )));
         }
 
         // Input 1: channels 0-1 (L/R)

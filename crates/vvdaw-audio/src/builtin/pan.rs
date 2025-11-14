@@ -35,12 +35,12 @@ impl Default for PanProcessor {
 impl PanProcessor {
     /// Get the current pan value (thread-safe)
     fn get_pan(&self) -> f32 {
-        f32::from_bits(self.pan.load(Ordering::Relaxed))
+        f32::from_bits(self.pan.load(Ordering::Acquire))
     }
 
     /// Set the pan value (thread-safe)
     fn set_pan(&self, value: f32) {
-        self.pan.store(value.to_bits(), Ordering::Relaxed);
+        self.pan.store(value.to_bits(), Ordering::Release);
     }
 
     /// Calculate constant-power pan gains
@@ -86,21 +86,28 @@ impl Plugin for PanProcessor {
         let pan = self.get_pan();
         let (left_gain, right_gain) = Self::calculate_gains(pan);
 
-        // Ensure we have stereo input and output
-        if audio.inputs.len() < 2 || audio.outputs.len() < 2 {
-            return Err(PluginError::ProcessingFailed(
-                "Pan processor requires stereo input and output".to_string(),
-            ));
+        // Ensure we have exactly stereo input and output
+        if audio.inputs.len() != 2 {
+            return Err(PluginError::ProcessingFailed(format!(
+                "Pan processor requires exactly 2 inputs (stereo), got {}",
+                audio.inputs.len()
+            )));
+        }
+        if audio.outputs.len() != 2 {
+            return Err(PluginError::ProcessingFailed(format!(
+                "Pan processor requires exactly 2 outputs (stereo), got {}",
+                audio.outputs.len()
+            )));
         }
 
         let left_in = audio.inputs[0];
         let right_in = audio.inputs[1];
 
-        // Apply constant-power panning
-        // Mix both input channels to both output channels with gains
+        // Apply constant-power panning (stereo balance)
+        // Left output gets left input with left gain, right output gets right input with right gain
         for i in 0..audio.frames {
-            audio.outputs[0][i] = left_in[i].mul_add(left_gain, right_in[i] * left_gain);
-            audio.outputs[1][i] = left_in[i].mul_add(right_gain, right_in[i] * right_gain);
+            audio.outputs[0][i] = left_in[i] * left_gain;
+            audio.outputs[1][i] = right_in[i] * right_gain;
         }
 
         Ok(())
@@ -240,10 +247,10 @@ mod tests {
         // Process
         processor.process(&mut audio, &events).unwrap();
 
-        // At center pan, both outputs should have equal mix of both inputs
+        // At center pan, both channels should be at ~0.707 gain
         let (left_gain, right_gain) = PanProcessor::calculate_gains(0.0);
-        let expected_left = 1.0_f32.mul_add(left_gain, 0.5 * left_gain);
-        let expected_right = 1.0_f32.mul_add(right_gain, 0.5 * right_gain);
+        let expected_left = 1.0 * left_gain; // 1.0 * 0.707
+        let expected_right = 0.5 * right_gain; // 0.5 * 0.707
 
         for sample in &left_out {
             assert!((*sample - expected_left).abs() < 0.01);
@@ -279,13 +286,134 @@ mod tests {
         // Process
         processor.process(&mut audio, &events).unwrap();
 
-        // At full left, left channel should have full signal, right should be silent
+        // At full left, left channel should have full gain (1.0), right should be silent
         for sample in &left_out {
-            assert!((*sample - 1.5).abs() < 0.01); // 1.0 + 0.5 = 1.5
+            assert!((*sample - 1.0).abs() < 0.01); // 1.0 * 1.0 = 1.0
         }
         for sample in &right_out {
-            assert!(sample.abs() < 0.01); // Should be ~0
+            assert!(sample.abs() < 0.01); // 0.5 * 0.0 = 0.0
         }
+    }
+
+    #[test]
+    fn test_pan_processing_full_right() {
+        let mut processor = PanProcessor::default();
+        processor.initialize(48000, 512).unwrap();
+        processor.set_parameter(0, 1.0).unwrap(); // Full right
+
+        // Create test buffers with distinct L/R values
+        let left_in = vec![0.8; 64];
+        let right_in = vec![0.6; 64];
+        let mut left_out = vec![0.0; 64];
+        let mut right_out = vec![0.0; 64];
+
+        let inputs: Vec<&[f32]> = vec![&left_in, &right_in];
+        let mut outputs: Vec<&mut [f32]> = vec![&mut left_out, &mut right_out];
+
+        let mut audio = AudioBuffer {
+            inputs: &inputs,
+            outputs: &mut outputs,
+            frames: 64,
+        };
+
+        let events = EventBuffer::new();
+
+        // Process
+        processor.process(&mut audio, &events).unwrap();
+
+        // At full right, left channel should be silent, right should have full gain
+        for sample in &left_out {
+            assert!(sample.abs() < 0.01); // 0.8 * 0.0 = 0.0
+        }
+        for sample in &right_out {
+            assert!((*sample - 0.6).abs() < 0.01); // 0.6 * 1.0 = 0.6
+        }
+    }
+
+    #[test]
+    fn test_pan_processing_distinct_values_left() {
+        let mut processor = PanProcessor::default();
+        processor.initialize(48000, 512).unwrap();
+        processor.set_parameter(0, -0.5).unwrap(); // Mid-left
+
+        // Create test buffers with very distinct L/R values
+        let left_in = vec![1.0; 64];
+        let right_in = vec![0.2; 64];
+        let mut left_out = vec![0.0; 64];
+        let mut right_out = vec![0.0; 64];
+
+        let inputs: Vec<&[f32]> = vec![&left_in, &right_in];
+        let mut outputs: Vec<&mut [f32]> = vec![&mut left_out, &mut right_out];
+
+        let mut audio = AudioBuffer {
+            inputs: &inputs,
+            outputs: &mut outputs,
+            frames: 64,
+        };
+
+        let events = EventBuffer::new();
+
+        // Process
+        processor.process(&mut audio, &events).unwrap();
+
+        // At mid-left, left channel should be stronger than right
+        let (left_gain, right_gain) = PanProcessor::calculate_gains(-0.5);
+        let expected_left = 1.0 * left_gain;
+        let expected_right = 0.2 * right_gain;
+
+        // Verify left output is from left input only
+        for sample in &left_out {
+            assert!((*sample - expected_left).abs() < 0.01);
+        }
+        // Verify right output is from right input only
+        for sample in &right_out {
+            assert!((*sample - expected_right).abs() < 0.01);
+        }
+        // Verify stereo balance: left should be louder
+        assert!(left_gain > right_gain);
+    }
+
+    #[test]
+    fn test_pan_processing_distinct_values_right() {
+        let mut processor = PanProcessor::default();
+        processor.initialize(48000, 512).unwrap();
+        processor.set_parameter(0, 0.5).unwrap(); // Mid-right
+
+        // Create test buffers with very distinct L/R values
+        let left_in = vec![0.3; 64];
+        let right_in = vec![0.9; 64];
+        let mut left_out = vec![0.0; 64];
+        let mut right_out = vec![0.0; 64];
+
+        let inputs: Vec<&[f32]> = vec![&left_in, &right_in];
+        let mut outputs: Vec<&mut [f32]> = vec![&mut left_out, &mut right_out];
+
+        let mut audio = AudioBuffer {
+            inputs: &inputs,
+            outputs: &mut outputs,
+            frames: 64,
+        };
+
+        let events = EventBuffer::new();
+
+        // Process
+        processor.process(&mut audio, &events).unwrap();
+
+        // At mid-right, right channel should be stronger than left
+        let (left_gain, right_gain) = PanProcessor::calculate_gains(0.5);
+        let expected_left = 0.3 * left_gain;
+        let expected_right = 0.9 * right_gain;
+
+        // Verify left output is from left input only
+        for sample in &left_out {
+            assert!((*sample - expected_left).abs() < 0.01);
+        }
+        // Verify right output is from right input only
+        for sample in &right_out {
+            assert!((*sample - expected_right).abs() < 0.01);
+        }
+        // Verify stereo balance: right should be louder
+        assert!(right_gain > left_gain);
     }
 
     #[test]

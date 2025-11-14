@@ -34,12 +34,12 @@ impl Default for GainProcessor {
 impl GainProcessor {
     /// Get the current gain value (thread-safe)
     fn get_gain(&self) -> f32 {
-        f32::from_bits(self.gain.load(Ordering::Relaxed))
+        f32::from_bits(self.gain.load(Ordering::Acquire))
     }
 
     /// Set the gain value (thread-safe)
     fn set_gain(&self, value: f32) {
-        self.gain.store(value.to_bits(), Ordering::Relaxed);
+        self.gain.store(value.to_bits(), Ordering::Release);
     }
 }
 
@@ -64,11 +64,22 @@ impl Plugin for GainProcessor {
     ) -> Result<(), PluginError> {
         let gain = self.get_gain();
 
-        // Copy input to output and apply gain
-        // Handle case where input/output channel counts may differ
-        let num_channels = audio.inputs.len().min(audio.outputs.len());
+        // Ensure we have exactly 2 inputs and 2 outputs (stereo)
+        if audio.inputs.len() != 2 {
+            return Err(PluginError::ProcessingFailed(format!(
+                "Gain processor requires exactly 2 inputs (stereo), got {}",
+                audio.inputs.len()
+            )));
+        }
+        if audio.outputs.len() != 2 {
+            return Err(PluginError::ProcessingFailed(format!(
+                "Gain processor requires exactly 2 outputs (stereo), got {}",
+                audio.outputs.len()
+            )));
+        }
 
-        for ch in 0..num_channels {
+        // Copy input to output and apply gain
+        for ch in 0..2 {
             for (input_sample, output_sample) in audio.inputs[ch]
                 .iter()
                 .zip(audio.outputs[ch].iter_mut())
