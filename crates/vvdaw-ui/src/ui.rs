@@ -435,7 +435,7 @@ pub fn poll_file_dialog(
 ) {
     // Non-blocking check for file dialog results
     while let Ok(path_string) = file_dialog_channel.receiver.try_recv() {
-        tracing::info!("Selected file: {path_string}");
+        tracing::info!("Loading WAV file: {path_string}");
 
         // Update file state
         file_state.current_path.clone_from(&path_string);
@@ -445,12 +445,107 @@ pub fn poll_file_dialog(
             file_state.loaded_files.push(path_string.clone());
         }
 
-        // Send load command to audio thread
-        if let Err(e) = audio_channels.send_command(AudioCommand::LoadWavFile(path_string)) {
-            tracing::error!("Failed to send LoadWavFile command: {e}");
-            audio_state.status_message = format!("Error: {e}");
-        } else {
-            audio_state.status_message = "Loading file...".to_string();
+        // Load WAV file (blocking is OK - we're in UI thread, not audio thread)
+        match load_wav_file(&path_string) {
+            Ok((samples, sample_rate)) => {
+                tracing::info!("Loaded {} frames at {}Hz", samples.len() / 2, sample_rate);
+
+                // Create sampler processor with loaded audio
+                let processor = Box::new(vvdaw_audio::builtin::sampler::SamplerProcessor::new(
+                    samples,
+                    sample_rate,
+                ));
+
+                // Send sampler to audio thread
+                if let Err(e) = audio_channels.send_plugin(processor) {
+                    tracing::error!("Failed to send sampler to audio thread: {e}");
+                    audio_state.status_message = format!("Error: {e}");
+                    continue;
+                }
+
+                // Send AddNode command
+                if let Err(e) = audio_channels.send_command(AudioCommand::AddNode) {
+                    tracing::error!("Failed to send AddNode command: {e}");
+                    audio_state.status_message = format!("Error: {e}");
+                } else {
+                    audio_state.status_message = format!(
+                        "Loaded: {}",
+                        std::path::Path::new(&path_string)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("file")
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to load WAV file: {e}");
+                audio_state.status_message = format!("Load error: {e}");
+            }
         }
     }
+}
+
+/// Load a WAV file and convert to interleaved stereo f32 samples
+///
+/// Returns (samples, `sample_rate`) where samples is [L, R, L, R, ...]
+fn load_wav_file(path: &str) -> Result<(Vec<f32>, u32), String> {
+    let mut reader =
+        hound::WavReader::open(path).map_err(|e| format!("Failed to open WAV file: {e}"))?;
+
+    let spec = reader.spec();
+    let sample_rate = spec.sample_rate;
+    let channels = spec.channels as usize;
+
+    tracing::debug!(
+        "WAV spec: {} channels, {}Hz, {} bits",
+        channels,
+        sample_rate,
+        spec.bits_per_sample
+    );
+
+    // Read all samples and convert to f32
+    let raw_samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read samples: {e}"))?,
+        hound::SampleFormat::Int => {
+            // Convert integer samples to f32 [-1.0, 1.0]
+            let max_value = (1 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .map(|s| s.map(|v| v as f32 / max_value))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to read samples: {e}"))?
+        }
+    };
+
+    // Convert to interleaved stereo
+    let stereo_samples = match channels {
+        1 => {
+            // Mono: duplicate to both channels
+            let mut stereo = Vec::with_capacity(raw_samples.len() * 2);
+            for sample in raw_samples {
+                stereo.push(sample); // Left
+                stereo.push(sample); // Right
+            }
+            stereo
+        }
+        2 => {
+            // Already stereo
+            raw_samples
+        }
+        _ => {
+            // More than 2 channels: take first 2
+            tracing::warn!("WAV file has {} channels, using only first 2", channels);
+            let mut stereo = Vec::with_capacity((raw_samples.len() / channels) * 2);
+            for chunk in raw_samples.chunks(channels) {
+                stereo.push(chunk[0]); // Left
+                stereo.push(chunk[1]); // Right
+            }
+            stereo
+        }
+    };
+
+    Ok((stereo_samples, sample_rate))
 }

@@ -61,6 +61,15 @@ impl AudioChannelResource {
             .map_err(|_| "Command channel full".to_string())
     }
 
+    /// Send a plugin instance to the audio thread
+    pub fn send_plugin(&self, plugin: vvdaw_comms::PluginInstance) -> Result<(), String> {
+        let channels = self.channels.lock().map_err(|e| e.to_string())?;
+        channels
+            .plugin_tx
+            .send(plugin)
+            .map_err(|_| "Plugin channel disconnected".to_string())
+    }
+
     /// Poll for events from the audio thread
     pub fn poll_events(&self) -> Vec<AudioEvent> {
         let Ok(mut channels) = self.channels.lock() else {
