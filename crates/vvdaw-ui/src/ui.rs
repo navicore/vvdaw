@@ -1,6 +1,7 @@
 //! UI components and systems
 
 use bevy::prelude::*;
+use crossbeam_channel::{Receiver, Sender};
 use vvdaw_comms::{AudioCommand, AudioEvent};
 
 use crate::AudioChannelResource;
@@ -33,6 +34,20 @@ impl Default for FilePathState {
             current_path: "No file selected - click Browse to load a WAV file".to_string(),
             loaded_files: Vec::new(),
         }
+    }
+}
+
+/// Channel for receiving file paths selected from the file dialog
+#[derive(Resource)]
+pub struct FileDialogChannel {
+    pub sender: Sender<String>,
+    pub receiver: Receiver<String>,
+}
+
+impl Default for FileDialogChannel {
+    fn default() -> Self {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        Self { sender, receiver }
     }
 }
 
@@ -89,6 +104,7 @@ pub fn setup_ui(mut commands: Commands) {
     // Insert resources
     commands.insert_resource(AudioState::default());
     commands.insert_resource(FilePathState::default());
+    commands.insert_resource(FileDialogChannel::default());
 
     // Spawn a camera
     commands.spawn(Camera2d);
@@ -244,6 +260,7 @@ pub fn handle_button_interactions(
     audio_channels: Res<AudioChannelResource>,
     mut audio_state: ResMut<AudioState>,
     mut file_state: ResMut<FilePathState>,
+    file_dialog_channel: Res<FileDialogChannel>,
 ) {
     for (interaction, mut color, play, stop, next, prev, browse) in &mut interaction_query {
         match *interaction {
@@ -277,34 +294,20 @@ pub fn handle_button_interactions(
                 // Handle browse button
                 if browse.is_some() {
                     tracing::info!("Browse button pressed - opening file dialog");
+                    audio_state.status_message = "Opening file dialog...".to_string();
 
-                    // Open file dialog (blocking for simplicity - we can make it async later if needed)
-                    if let Some(file_path) = rfd::FileDialog::new()
-                        .add_filter("WAV Audio", &["wav"])
-                        .set_title("Select WAV File")
-                        .pick_file()
-                    {
-                        let path_string = file_path.display().to_string();
-                        tracing::info!("Selected file: {}", path_string);
-
-                        // Update file state
-                        file_state.current_path.clone_from(&path_string);
-
-                        // Add to loaded files history if not already there
-                        if !file_state.loaded_files.contains(&path_string) {
-                            file_state.loaded_files.push(path_string.clone());
-                        }
-
-                        // Send load command to audio thread
-                        if let Err(e) =
-                            audio_channels.send_command(AudioCommand::LoadWavFile(path_string))
+                    // Spawn file dialog in background thread to avoid blocking UI
+                    let sender = file_dialog_channel.sender.clone();
+                    std::thread::spawn(move || {
+                        if let Some(file_path) = rfd::FileDialog::new()
+                            .add_filter("WAV Audio", &["wav"])
+                            .set_title("Select WAV File")
+                            .pick_file()
                         {
-                            tracing::error!("Failed to send LoadWavFile command: {e}");
-                            audio_state.status_message = format!("Error: {e}");
-                        } else {
-                            audio_state.status_message = "Loading file...".to_string();
+                            let path_string = file_path.display().to_string();
+                            let _ = sender.send(path_string);
                         }
-                    }
+                    });
                 }
 
                 // Handle next file button
@@ -418,6 +421,36 @@ pub fn poll_audio_events(
     if audio_state.is_changed() {
         for mut text in &mut status_query {
             text.0.clone_from(&audio_state.status_message);
+        }
+    }
+}
+
+/// Poll for file paths selected from the file dialog
+#[allow(clippy::needless_pass_by_value)]
+pub fn poll_file_dialog(
+    file_dialog_channel: Res<FileDialogChannel>,
+    audio_channels: Res<AudioChannelResource>,
+    mut audio_state: ResMut<AudioState>,
+    mut file_state: ResMut<FilePathState>,
+) {
+    // Non-blocking check for file dialog results
+    while let Ok(path_string) = file_dialog_channel.receiver.try_recv() {
+        tracing::info!("Selected file: {path_string}");
+
+        // Update file state
+        file_state.current_path.clone_from(&path_string);
+
+        // Add to loaded files history if not already there
+        if !file_state.loaded_files.contains(&path_string) {
+            file_state.loaded_files.push(path_string.clone());
+        }
+
+        // Send load command to audio thread
+        if let Err(e) = audio_channels.send_command(AudioCommand::LoadWavFile(path_string)) {
+            tracing::error!("Failed to send LoadWavFile command: {e}");
+            audio_state.status_message = format!("Error: {e}");
+        } else {
+            audio_state.status_message = "Loading file...".to_string();
         }
     }
 }
