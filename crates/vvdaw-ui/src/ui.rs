@@ -24,20 +24,14 @@ pub struct AudioState {
 #[derive(Resource)]
 pub struct FilePathState {
     pub current_path: String,
-    pub available_files: Vec<String>,
-    pub current_index: usize,
+    pub loaded_files: Vec<String>,
 }
 
 impl Default for FilePathState {
     fn default() -> Self {
         Self {
-            current_path: "No file selected".to_string(),
-            available_files: vec![
-                "test_audio.wav".to_string(),
-                "drums.wav".to_string(),
-                "bass.wav".to_string(),
-            ],
-            current_index: 0,
+            current_path: "No file selected - click Browse to load a WAV file".to_string(),
+            loaded_files: Vec::new(),
         }
     }
 }
@@ -57,6 +51,10 @@ pub struct NextFileButton;
 /// Marker component for the previous file button
 #[derive(Component)]
 pub struct PrevFileButton;
+
+/// Marker component for the browse button
+#[derive(Component)]
+pub struct BrowseButton;
 
 /// Marker component for the file path text
 #[derive(Component)]
@@ -81,6 +79,7 @@ type ButtonInteractionQuery<'w, 's> = Query<
         Option<&'static StopButton>,
         Option<&'static NextFileButton>,
         Option<&'static PrevFileButton>,
+        Option<&'static BrowseButton>,
     ),
     (Changed<Interaction>, With<Button>),
 >;
@@ -162,6 +161,9 @@ pub fn setup_ui(mut commands: Commands) {
                             ..default()
                         })
                         .with_children(|parent| {
+                            // Browse button
+                            spawn_button(parent, "Browse...", BrowseButton);
+
                             // Previous file button
                             spawn_button(parent, "< Prev", PrevFileButton);
 
@@ -243,7 +245,7 @@ pub fn handle_button_interactions(
     mut audio_state: ResMut<AudioState>,
     mut file_state: ResMut<FilePathState>,
 ) {
-    for (interaction, mut color, play, stop, next, prev) in &mut interaction_query {
+    for (interaction, mut color, play, stop, next, prev, browse) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
                 *color = PRESSED_BUTTON.into();
@@ -272,25 +274,87 @@ pub fn handle_button_interactions(
                     }
                 }
 
+                // Handle browse button
+                if browse.is_some() {
+                    tracing::info!("Browse button pressed - opening file dialog");
+
+                    // Open file dialog (blocking for simplicity - we can make it async later if needed)
+                    if let Some(file_path) = rfd::FileDialog::new()
+                        .add_filter("WAV Audio", &["wav"])
+                        .set_title("Select WAV File")
+                        .pick_file()
+                    {
+                        let path_string = file_path.display().to_string();
+                        tracing::info!("Selected file: {}", path_string);
+
+                        // Update file state
+                        file_state.current_path.clone_from(&path_string);
+
+                        // Add to loaded files history if not already there
+                        if !file_state.loaded_files.contains(&path_string) {
+                            file_state.loaded_files.push(path_string.clone());
+                        }
+
+                        // Send load command to audio thread
+                        if let Err(e) =
+                            audio_channels.send_command(AudioCommand::LoadWavFile(path_string))
+                        {
+                            tracing::error!("Failed to send LoadWavFile command: {e}");
+                            audio_state.status_message = format!("Error: {e}");
+                        } else {
+                            audio_state.status_message = "Loading file...".to_string();
+                        }
+                    }
+                }
+
                 // Handle next file button
-                if next.is_some() {
-                    file_state.current_index =
-                        (file_state.current_index + 1) % file_state.available_files.len();
-                    file_state.current_path =
-                        file_state.available_files[file_state.current_index].clone();
-                    tracing::info!("Selected file: {}", file_state.current_path);
+                if next.is_some() && !file_state.loaded_files.is_empty() {
+                    // Find current file in history
+                    if let Some(current_idx) = file_state
+                        .loaded_files
+                        .iter()
+                        .position(|f| f == &file_state.current_path)
+                    {
+                        let next_idx = (current_idx + 1) % file_state.loaded_files.len();
+                        let path = file_state.loaded_files[next_idx].clone();
+                        tracing::info!("Selected file: {path}");
+
+                        // Send load command
+                        if let Err(e) =
+                            audio_channels.send_command(AudioCommand::LoadWavFile(path.clone()))
+                        {
+                            tracing::error!("Failed to send LoadWavFile command: {e}");
+                        }
+
+                        file_state.current_path = path;
+                    }
                 }
 
                 // Handle previous file button
-                if prev.is_some() {
-                    if file_state.current_index == 0 {
-                        file_state.current_index = file_state.available_files.len() - 1;
-                    } else {
-                        file_state.current_index -= 1;
+                if prev.is_some() && !file_state.loaded_files.is_empty() {
+                    // Find current file in history
+                    if let Some(current_idx) = file_state
+                        .loaded_files
+                        .iter()
+                        .position(|f| f == &file_state.current_path)
+                    {
+                        let prev_idx = if current_idx == 0 {
+                            file_state.loaded_files.len() - 1
+                        } else {
+                            current_idx - 1
+                        };
+                        let path = file_state.loaded_files[prev_idx].clone();
+                        tracing::info!("Selected file: {path}");
+
+                        // Send load command
+                        if let Err(e) =
+                            audio_channels.send_command(AudioCommand::LoadWavFile(path.clone()))
+                        {
+                            tracing::error!("Failed to send LoadWavFile command: {e}");
+                        }
+
+                        file_state.current_path = path;
                     }
-                    file_state.current_path =
-                        file_state.available_files[file_state.current_index].clone();
-                    tracing::info!("Selected file: {}", file_state.current_path);
                 }
             }
             Interaction::Hovered => {

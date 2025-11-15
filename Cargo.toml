@@ -58,6 +58,7 @@ dasp = "0.11"  # Sample types and conversions
 
 # General utilities
 parking_lot = "0.12"  # When you absolutely need a mutex (rarely)
+rfd = "0.15"  # File dialogs
 libloading = "0.8"  # Dynamic library loading for plugins
 smallvec = "1.13"  # Stack-allocated vecs for real-time audio (no heap allocation for small sizes)
 libc = "0.2"  # POSIX system calls for shared memory

@@ -16,6 +16,8 @@ pub enum AudioCommand {
     Start,
     /// Stop audio processing
     Stop,
+    /// Load a WAV file for playback
+    LoadWavFile(String),
     /// Set a parameter value (`node_id`, `param_id`, value)
     SetParameter(usize, u32, f32),
     /// Add a node to the graph

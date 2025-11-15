@@ -20,3 +20,4 @@ vvdaw-comms.workspace = true
 bevy.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+rfd.workspace = true
