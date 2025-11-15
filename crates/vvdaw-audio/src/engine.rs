@@ -84,12 +84,6 @@ impl AudioEngine {
                             is_running = false;
                             let _ = channels.event_tx.push(AudioEvent::Stopped);
                         }
-                        AudioCommand::LoadWavFile(_path) => {
-                            // REAL-TIME SAFE: No tracing in audio callback
-                            // TODO: Implement WAV file loading
-                            // For now, just acknowledge the command
-                            // Actual file I/O should happen outside the audio callback
-                        }
                         AudioCommand::SetParameter(_node_id, _param_id, _value) => {
                             // REAL-TIME SAFE: No tracing in audio callback
                             // TODO: Set parameter on node via graph

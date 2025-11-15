@@ -320,16 +320,12 @@ pub fn handle_button_interactions(
                     {
                         let next_idx = (current_idx + 1) % file_state.loaded_files.len();
                         let path = file_state.loaded_files[next_idx].clone();
-                        tracing::info!("Selected file: {path}");
 
-                        // Send load command
-                        if let Err(e) =
-                            audio_channels.send_command(AudioCommand::LoadWavFile(path.clone()))
-                        {
-                            tracing::error!("Failed to send LoadWavFile command: {e}");
-                        }
+                        // Update current path
+                        file_state.current_path.clone_from(&path);
 
-                        file_state.current_path = path;
+                        // Load WAV file and send to audio thread
+                        load_and_send_wav(&path, &audio_channels, &mut audio_state);
                     }
                 }
 
@@ -347,16 +343,12 @@ pub fn handle_button_interactions(
                             current_idx - 1
                         };
                         let path = file_state.loaded_files[prev_idx].clone();
-                        tracing::info!("Selected file: {path}");
 
-                        // Send load command
-                        if let Err(e) =
-                            audio_channels.send_command(AudioCommand::LoadWavFile(path.clone()))
-                        {
-                            tracing::error!("Failed to send LoadWavFile command: {e}");
-                        }
+                        // Update current path
+                        file_state.current_path.clone_from(&path);
 
-                        file_state.current_path = path;
+                        // Load WAV file and send to audio thread
+                        load_and_send_wav(&path, &audio_channels, &mut audio_state);
                     }
                 }
             }
@@ -435,8 +427,6 @@ pub fn poll_file_dialog(
 ) {
     // Non-blocking check for file dialog results
     while let Ok(path_string) = file_dialog_channel.receiver.try_recv() {
-        tracing::info!("Loading WAV file: {path_string}");
-
         // Update file state
         file_state.current_path.clone_from(&path_string);
 
@@ -445,42 +435,57 @@ pub fn poll_file_dialog(
             file_state.loaded_files.push(path_string.clone());
         }
 
-        // Load WAV file (blocking is OK - we're in UI thread, not audio thread)
-        match load_wav_file(&path_string) {
-            Ok((samples, sample_rate)) => {
-                tracing::info!("Loaded {} frames at {}Hz", samples.len() / 2, sample_rate);
+        // Load and send to audio thread
+        load_and_send_wav(&path_string, &audio_channels, &mut audio_state);
+    }
+}
 
-                // Create sampler processor with loaded audio
-                let processor = Box::new(vvdaw_audio::builtin::sampler::SamplerProcessor::new(
-                    samples,
-                    sample_rate,
-                ));
+/// Load a WAV file and send the sampler processor to the audio thread
+///
+/// This is the ONLY correct way to load audio - all file I/O happens in the UI thread,
+/// and only the ready-to-use processor is sent to the real-time audio thread.
+fn load_and_send_wav(
+    path: &str,
+    audio_channels: &AudioChannelResource,
+    audio_state: &mut AudioState,
+) {
+    tracing::info!("Loading WAV file: {path}");
 
-                // Send sampler to audio thread
-                if let Err(e) = audio_channels.send_plugin(processor) {
-                    tracing::error!("Failed to send sampler to audio thread: {e}");
-                    audio_state.status_message = format!("Error: {e}");
-                    continue;
-                }
+    // Load WAV file (blocking is OK - we're in UI thread, not audio thread)
+    match load_wav_file(path) {
+        Ok((samples, sample_rate)) => {
+            tracing::info!("Loaded {} frames at {}Hz", samples.len() / 2, sample_rate);
 
-                // Send AddNode command
-                if let Err(e) = audio_channels.send_command(AudioCommand::AddNode) {
-                    tracing::error!("Failed to send AddNode command: {e}");
-                    audio_state.status_message = format!("Error: {e}");
-                } else {
-                    audio_state.status_message = format!(
-                        "Loaded: {}",
-                        std::path::Path::new(&path_string)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("file")
-                    );
-                }
+            // Create sampler processor with loaded audio
+            let processor = Box::new(vvdaw_audio::builtin::sampler::SamplerProcessor::new(
+                samples,
+                sample_rate,
+            ));
+
+            // Send sampler to audio thread
+            if let Err(e) = audio_channels.send_plugin(processor) {
+                tracing::error!("Failed to send sampler to audio thread: {e}");
+                audio_state.status_message = format!("Error: {e}");
+                return;
             }
-            Err(e) => {
-                tracing::error!("Failed to load WAV file: {e}");
-                audio_state.status_message = format!("Load error: {e}");
+
+            // Send AddNode command
+            if let Err(e) = audio_channels.send_command(AudioCommand::AddNode) {
+                tracing::error!("Failed to send AddNode command: {e}");
+                audio_state.status_message = format!("Error: {e}");
+            } else {
+                audio_state.status_message = format!(
+                    "Loaded: {}",
+                    std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("file")
+                );
             }
+        }
+        Err(e) => {
+            tracing::error!("Failed to load WAV file: {e}");
+            audio_state.status_message = format!("Load error: {e}");
         }
     }
 }

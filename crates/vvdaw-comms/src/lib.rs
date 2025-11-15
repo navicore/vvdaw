@@ -10,14 +10,15 @@ use crossbeam_channel::{Receiver, Sender};
 use vvdaw_core::Sample;
 
 /// Commands that can be sent from UI thread to audio thread
+///
+/// IMPORTANT: All variants must be real-time safe (no heap allocation/deallocation).
+/// For complex data (like plugin instances), use the separate `plugin_tx` channel.
 #[derive(Debug, Clone)]
 pub enum AudioCommand {
     /// Start audio processing
     Start,
     /// Stop audio processing
     Stop,
-    /// Load a WAV file for playback
-    LoadWavFile(String),
     /// Set a parameter value (`node_id`, `param_id`, value)
     SetParameter(usize, u32, f32),
     /// Add a node to the graph
