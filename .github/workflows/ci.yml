@@ -52,10 +52,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-target-
 
-      # Linux-specific: Install audio dependencies for cpal
-      - name: Install audio dependencies (Linux)
+      # Linux-specific: Install audio and UI dependencies
+      - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libvulkan-dev
 
       - name: Install just
         uses: extractions/setup-just@v2
