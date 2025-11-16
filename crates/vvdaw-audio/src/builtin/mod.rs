@@ -7,6 +7,7 @@
 pub mod gain;
 pub mod mixer;
 pub mod pan;
+pub mod sampler;
 
 use vvdaw_plugin::Plugin;
 

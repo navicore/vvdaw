@@ -3,10 +3,12 @@
 //! Main application entry point.
 
 use anyhow::Result;
+use bevy::prelude::*;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use vvdaw_audio::{AudioConfig, AudioEngine};
-use vvdaw_comms::{AudioCommand, AudioEvent, create_channels};
+use vvdaw_comms::create_channels;
+use vvdaw_ui::VvdawUiPlugin;
 
 fn main() -> Result<()> {
     // Initialize tracing
@@ -21,7 +23,7 @@ fn main() -> Result<()> {
     tracing::info!("Starting vvdaw...");
 
     // Create communication channels
-    let (mut ui_channels, audio_channels) = create_channels(256);
+    let (ui_channels, audio_channels) = create_channels(256);
 
     // Create audio configuration
     let audio_config = AudioConfig::default();
@@ -31,70 +33,34 @@ fn main() -> Result<()> {
     let mut engine = AudioEngine::new(audio_config);
     engine.start(audio_channels)?;
 
-    tracing::info!("vvdaw initialized successfully");
+    tracing::info!("Audio engine started");
 
-    // Send Start command to begin audio playback
-    tracing::info!("Sending Start command to audio thread");
-    if let Err(e) = ui_channels.command_tx.push(AudioCommand::Start) {
-        tracing::error!("Failed to send Start command: {:?}", e);
-        return Ok(()); // Exit gracefully
-    }
+    // Create and run Bevy app with UI
+    //
+    // IMPORTANT: In Bevy 0.15+, App::run() returns when:
+    // - The window is closed
+    // - An AppExit event is sent
+    // - The process is terminated (Ctrl+C, SIGTERM, etc.)
+    //
+    // When App::run() returns or the process exits, the `engine` variable
+    // goes out of scope and its Drop impl is called, which stops the audio
+    // stream. This ensures proper cleanup in all exit scenarios.
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "VVDAW - Visual Virtual DAW".to_string(),
+                resolution: (800.0, 600.0).into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_plugins(VvdawUiPlugin::new(ui_channels))
+        .run();
 
-    // Poll for events from audio thread
-    let start_time = std::time::Instant::now();
-    let run_duration = std::time::Duration::from_secs(3);
+    tracing::info!("Bevy app exited - audio engine will be cleaned up");
 
-    tracing::info!(
-        "Playing test tone for {} seconds...",
-        run_duration.as_secs()
-    );
-
-    while start_time.elapsed() < run_duration {
-        // Process events from audio thread
-        while let Ok(event) = ui_channels.event_rx.pop() {
-            match event {
-                AudioEvent::Started => {
-                    tracing::info!("Audio playback started");
-                }
-                AudioEvent::Stopped => {
-                    tracing::info!("Audio playback stopped");
-                }
-                AudioEvent::Error(msg) => {
-                    tracing::error!("Audio error: {}", msg);
-                }
-                AudioEvent::PeakLevel { channel, level } => {
-                    // Only log occasionally to avoid spam
-                    if level > 0.05 {
-                        tracing::trace!("Peak level ch{}: {:.3}", channel, level);
-                    }
-                }
-            }
-        }
-
-        // Sleep briefly to avoid busy-waiting
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-
-    // Send Stop command
-    tracing::info!("Sending Stop command to audio thread");
-    if let Err(e) = ui_channels.command_tx.push(AudioCommand::Stop) {
-        tracing::warn!("Failed to send Stop command: {:?}", e);
-        // Continue with shutdown anyway
-    }
-
-    // Give audio thread time to process Stop command
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // Process final events
-    while let Ok(event) = ui_channels.event_rx.pop() {
-        if matches!(event, AudioEvent::Stopped) {
-            tracing::info!("Audio playback stopped");
-        }
-    }
-
-    engine.stop()?;
-
-    tracing::info!("vvdaw shutting down");
+    // NOTE: AudioEngine::drop() is called here automatically, which stops the audio stream.
+    // Explicit engine.stop() is not needed, but we rely on the Drop impl for cleanup.
 
     Ok(())
 }

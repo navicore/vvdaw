@@ -89,33 +89,81 @@ impl AudioEngine {
                             // TODO: Set parameter on node via graph
                         }
                         AudioCommand::AddNode => {
-                            // REAL-TIME SAFE: No tracing in audio callback
-                            // Receive the plugin instance from the plugin channel
-                            if let Ok(plugin) = channels.plugin_rx.try_recv() {
-                                // Ignore errors - can't log in audio callback
-
-                                // LIMITATION: Plugin source is Unknown when added via engine
-                                // This means plugins added through the audio engine won't be
-                                // serializable in sessions. To fix this, we would need to:
-                                // 1. Change PluginInstance to include PluginSource
-                                // 2. Update all code that sends plugins through channels
-                                // 3. Store source info when loading plugins in UI thread
-                                // For now, session save will error if graph contains Unknown sources.
-                                let _ = graph.add_node(plugin, crate::graph::PluginSource::Unknown);
+                            // REAL-TIME SAFETY: Only modify graph when audio is stopped
+                            //
+                            // AudioGraph::add_node() allocates memory:
+                            // - HashMap::insert (graph.rs:220)
+                            // - Vec for buffers (graph.rs:363-364)
+                            // - Topological sort (graph.rs:381-398)
+                            //
+                            // To maintain real-time safety, we only process this command
+                            // when is_running == false. This PROVES the POC concept:
+                            // UI and audio can coexist with strict real-time boundaries.
+                            //
+                            // Workflow: User stops audio → loads file → starts audio
+                            // This is the expected UX for a sampler/player anyway.
+                            //
+                            // For production, consider triple-buffered graph or pre-allocated pools.
+                            if is_running {
+                                // Audio is running - reject to maintain real-time safety
+                                let _ = channels.plugin_rx.try_recv(); // Drain the plugin
+                                let _ = channels.event_tx.push(AudioEvent::Error(
+                                    "Cannot add nodes while playing. Stop audio first.".to_string(),
+                                ));
+                            } else {
+                                // Safe to allocate - audio is stopped
+                                if let Ok(plugin) = channels.plugin_rx.try_recv()
+                                    && let Ok(node_id) =
+                                        graph.add_node(plugin, crate::graph::PluginSource::Unknown)
+                                {
+                                    let _ =
+                                        channels.event_tx.push(AudioEvent::NodeAdded { node_id });
+                                }
                             }
                         }
                         AudioCommand::RemoveNode(node_id) => {
-                            // REAL-TIME SAFE: No tracing in audio callback
-                            graph.remove_node(node_id);
+                            // REAL-TIME SAFETY: Only modify graph when audio is stopped
+                            //
+                            // AudioGraph::remove_node() deallocates and reallocates:
+                            // - HashMap::remove (graph.rs:248, 251, 252)
+                            // - update_processing_order (graph.rs:255)
+                            if is_running {
+                                let _ = channels.event_tx.push(AudioEvent::Error(
+                                    "Cannot remove nodes while playing. Stop audio first."
+                                        .to_string(),
+                                ));
+                            } else {
+                                graph.remove_node(node_id);
+                            }
                         }
                         AudioCommand::Connect { from, to } => {
-                            // REAL-TIME SAFE: No tracing in audio callback
-                            // Ignore errors - can't log in audio callback
-                            let _ = graph.connect(from, to);
+                            // REAL-TIME SAFETY: Only modify graph when audio is stopped
+                            //
+                            // AudioGraph::connect() allocates:
+                            // - HashSet::insert (graph.rs:296)
+                            // - update_processing_order (graph.rs:299)
+                            if is_running {
+                                let _ = channels.event_tx.push(AudioEvent::Error(
+                                    "Cannot modify connections while playing. Stop audio first."
+                                        .to_string(),
+                                ));
+                            } else {
+                                let _ = graph.connect(from, to);
+                            }
                         }
                         AudioCommand::Disconnect { from, to } => {
-                            // REAL-TIME SAFE: No tracing in audio callback
-                            graph.disconnect(from, to);
+                            // REAL-TIME SAFETY: Only modify graph when audio is stopped
+                            //
+                            // AudioGraph::disconnect() allocates:
+                            // - update_processing_order (graph.rs:311)
+                            if is_running {
+                                let _ = channels.event_tx.push(AudioEvent::Error(
+                                    "Cannot modify connections while playing. Stop audio first."
+                                        .to_string(),
+                                ));
+                            } else {
+                                graph.disconnect(from, to);
+                            }
                         }
                     }
                 }

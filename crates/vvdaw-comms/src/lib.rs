@@ -10,6 +10,9 @@ use crossbeam_channel::{Receiver, Sender};
 use vvdaw_core::Sample;
 
 /// Commands that can be sent from UI thread to audio thread
+///
+/// IMPORTANT: All variants must be real-time safe (no heap allocation/deallocation).
+/// For complex data (like plugin instances), use the separate `plugin_tx` channel.
 #[derive(Debug, Clone)]
 pub enum AudioCommand {
     /// Start audio processing
@@ -53,6 +56,14 @@ pub enum AudioEvent {
         channel: usize,
         /// Peak level value
         level: Sample,
+    },
+    /// Node was added to the graph
+    ///
+    /// Sent after `AddNode` command succeeds, reports the assigned node ID.
+    /// This allows the UI to track node IDs for later removal/modification.
+    NodeAdded {
+        /// The ID assigned to the newly added node
+        node_id: usize,
     },
 }
 

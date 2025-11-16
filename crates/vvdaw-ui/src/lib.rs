@@ -3,45 +3,86 @@
 //! This crate provides the 2D/3D visual interface using Bevy.
 
 use bevy::prelude::*;
+use std::sync::{Arc, Mutex};
+use vvdaw_comms::{AudioCommand, AudioEvent, UiChannels};
+
+mod ui;
+
+pub use ui::{AudioState, PlaybackState};
 
 /// Main UI plugin for Bevy
-pub struct VvdawUiPlugin;
+pub struct VvdawUiPlugin {
+    /// Audio communication channels (wrapped for thread safety)
+    pub audio_channels: Arc<Mutex<UiChannels>>,
+}
 
-impl Plugin for VvdawUiPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_ui)
-            .add_systems(Update, (handle_input, send_commands, receive_events));
+impl VvdawUiPlugin {
+    /// Create a new UI plugin with audio channels
+    pub fn new(channels: UiChannels) -> Self {
+        Self {
+            audio_channels: Arc::new(Mutex::new(channels)),
+        }
     }
 }
 
-// TODO: Audio communication channels will be added later
-// The challenge is that rtrb channels are !Send + !Sync, so they can't be
-// Bevy resources. We'll need to use a different approach, possibly:
-// - Store channels in a thread-local
-// - Use crossbeam channels for Bevy integration
-// - Pass channels through the main loop differently
+impl Plugin for VvdawUiPlugin {
+    fn build(&self, app: &mut App) {
+        // Insert audio channels as a resource
+        app.insert_resource(AudioChannelResource {
+            channels: self.audio_channels.clone(),
+        });
 
-/// Setup the UI
-fn setup_ui(mut commands: Commands) {
-    // Spawn a camera
-    commands.spawn(Camera2d);
-
-    tracing::info!("UI setup complete");
+        // Add UI systems
+        app.add_systems(Startup, ui::setup_ui).add_systems(
+            Update,
+            (
+                ui::handle_button_interactions,
+                ui::update_file_path_text,
+                ui::poll_audio_events,
+                ui::poll_file_dialog,
+                ui::poll_wav_load_tasks,
+            ),
+        );
+    }
 }
 
-/// Handle user input
-fn handle_input() {
-    // TODO: Handle keyboard, mouse, etc.
+/// Resource holding the audio communication channels
+#[derive(Resource, Clone)]
+pub struct AudioChannelResource {
+    pub channels: Arc<Mutex<UiChannels>>,
 }
 
-/// Send commands to audio thread
-fn send_commands() {
-    // TODO: Send commands based on user actions
-}
+impl AudioChannelResource {
+    /// Send a command to the audio thread
+    pub fn send_command(&self, command: AudioCommand) -> Result<(), String> {
+        let mut channels = self.channels.lock().map_err(|e| e.to_string())?;
+        channels
+            .command_tx
+            .push(command)
+            .map_err(|_| "Command channel full".to_string())
+    }
 
-/// Receive events from audio thread
-fn receive_events() {
-    // TODO: Receive and process events from audio thread
+    /// Send a plugin instance to the audio thread
+    pub fn send_plugin(&self, plugin: vvdaw_comms::PluginInstance) -> Result<(), String> {
+        let channels = self.channels.lock().map_err(|e| e.to_string())?;
+        channels
+            .plugin_tx
+            .send(plugin)
+            .map_err(|_| "Plugin channel disconnected".to_string())
+    }
+
+    /// Poll for events from the audio thread
+    pub fn poll_events(&self) -> Vec<AudioEvent> {
+        let Ok(mut channels) = self.channels.lock() else {
+            return vec![];
+        };
+
+        let mut events = Vec::new();
+        while let Ok(event) = channels.event_rx.pop() {
+            events.push(event);
+        }
+        events
+    }
 }
 
 #[cfg(test)]

@@ -16,7 +16,12 @@ workspace = true
 [dependencies]
 vvdaw-core.workspace = true
 vvdaw-comms.workspace = true
+vvdaw-audio.workspace = true
 
 bevy.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+rfd.workspace = true
+crossbeam-channel.workspace = true
+hound.workspace = true
+futures-lite.workspace = true

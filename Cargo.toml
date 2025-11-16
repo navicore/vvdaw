@@ -49,6 +49,9 @@ rtrb = "0.3"
 triple_buffer = "8.0"
 crossbeam-channel = "0.5"
 
+# Async utilities
+futures-lite = "2.5"
+
 # VST3 related (will add proper crates when implementing)
 # vst3-sys = "0.4"  # May still be GPL - waiting for MIT-based version
 
@@ -58,6 +61,7 @@ dasp = "0.11"  # Sample types and conversions
 
 # General utilities
 parking_lot = "0.12"  # When you absolutely need a mutex (rarely)
+rfd = "0.15"  # File dialogs
 libloading = "0.8"  # Dynamic library loading for plugins
 smallvec = "1.13"  # Stack-allocated vecs for real-time audio (no heap allocation for small sizes)
 libc = "0.2"  # POSIX system calls for shared memory
