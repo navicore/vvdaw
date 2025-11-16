@@ -2,8 +2,9 @@
 //!
 //! Converts audio samples into 3D geometry for visualization.
 
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, PrimitiveTopology};
 
 /// Resource holding loaded audio waveform data
 ///
@@ -93,7 +94,7 @@ pub fn generate_channel_mesh(
         // Return empty mesh if no samples
         return Mesh::new(
             PrimitiveTopology::TriangleList,
-            bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD,
+            RenderAssetUsages::RENDER_WORLD,
         );
     }
 
@@ -150,7 +151,7 @@ pub fn generate_channel_mesh(
     // Build mesh
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
-        bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD,
+        RenderAssetUsages::RENDER_WORLD,
     );
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);

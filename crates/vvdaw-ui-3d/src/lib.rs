@@ -34,7 +34,7 @@ pub fn create_app() -> App {
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "vvdaw - 3D Highway UI".to_string(),
-            resolution: (1920.0, 1080.0).into(),
+            resolution: (1920, 1080).into(),
             ..default()
         }),
         ..default()

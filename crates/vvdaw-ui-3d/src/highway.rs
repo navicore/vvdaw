@@ -5,6 +5,8 @@
 //! - Left/right walls represent stereo waveforms (guardrails)
 
 use crate::waveform::{WaveformData, WaveformMeshConfig, generate_channel_mesh};
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
 
 pub struct HighwayPlugin;
@@ -58,8 +60,8 @@ fn setup_highway(
     // Left channel wall (placeholder) - bright green
     commands.spawn((
         Mesh3d(meshes.add(Mesh::new(
-            bevy::render::mesh::PrimitiveTopology::TriangleList,
-            bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD,
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
         ))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.0, 1.0, 0.0), // Pure bright green
@@ -74,8 +76,8 @@ fn setup_highway(
     // Right channel wall (placeholder) - bright red
     commands.spawn((
         Mesh3d(meshes.add(Mesh::new(
-            bevy::render::mesh::PrimitiveTopology::TriangleList,
-            bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD,
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
         ))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.0, 0.0), // Pure bright red
@@ -183,7 +185,7 @@ fn update_waveform_meshes(
     );
 
     // Update left channel mesh
-    if let Ok(mesh_handle) = left_query.get_single() {
+    if let Ok(mesh_handle) = left_query.single() {
         tracing::info!("Generating left channel mesh...");
         let left_samples = waveform.left_channel();
         let mesh = generate_channel_mesh(&left_samples, waveform.sample_rate, &config);
@@ -199,7 +201,7 @@ fn update_waveform_meshes(
     }
 
     // Update right channel mesh
-    if let Ok(mesh_handle) = right_query.get_single() {
+    if let Ok(mesh_handle) = right_query.single() {
         tracing::info!("Generating right channel mesh...");
         let right_samples = waveform.right_channel();
         let mesh = generate_channel_mesh(&right_samples, waveform.sample_rate, &config);

@@ -15,7 +15,7 @@ workspace = true
 
 [dependencies]
 # Bevy game engine with 3D rendering
-bevy = { version = "0.15", default-features = false, features = [
+bevy = { workspace = true, features = [
     "bevy_asset",
     "bevy_color",
     "bevy_core_pipeline",
@@ -28,6 +28,7 @@ bevy = { version = "0.15", default-features = false, features = [
     "multi_threaded",
     "png",
     "tonemapping_luts", # Required for proper color rendering
+    "zstd_rust",       # Required zstd backend for 0.17+
     "x11",             # Linux support
     "wayland",         # Linux Wayland support
 ] }

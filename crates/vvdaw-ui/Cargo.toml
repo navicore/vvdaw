@@ -18,7 +18,22 @@ vvdaw-core.workspace = true
 vvdaw-comms.workspace = true
 vvdaw-audio.workspace = true
 
-bevy.workspace = true
+bevy = { workspace = true, features = [
+    "bevy_asset",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_render",
+    "bevy_sprite",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_winit",
+    "multi_threaded",
+    "png",
+    "tonemapping_luts",
+    "zstd_rust",
+    "x11",
+    "wayland",
+] }
 anyhow.workspace = true
 tracing.workspace = true
 rfd.workspace = true

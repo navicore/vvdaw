@@ -110,7 +110,7 @@ fn camera_movement(
 /// Handle camera look (mouse movement)
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters must be passed by value
 fn camera_look(
-    mut mouse_motion: EventReader<MouseMotion>,
+    mut mouse_motion: MessageReader<MouseMotion>,
     mouse_button: Res<ButtonInput<MouseButton>>,
     mut query: Query<(&mut Transform, &mut FlightCamera)>,
 ) {

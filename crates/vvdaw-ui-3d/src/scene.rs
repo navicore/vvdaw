@@ -16,6 +16,7 @@ fn setup_scene(mut commands: Commands) {
     commands.insert_resource(AmbientLight {
         color: Color::WHITE,
         brightness: 500.0,
+        affects_lightmapped_meshes: true,
     });
 
     // Bright white directional light

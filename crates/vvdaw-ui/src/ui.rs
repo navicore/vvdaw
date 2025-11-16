@@ -122,6 +122,7 @@ type ButtonInteractionQuery<'w, 's> = Query<
 >;
 
 /// Setup the UI
+#[allow(clippy::too_many_lines)]
 pub fn setup_ui(mut commands: Commands) {
     // Insert resources
     commands.insert_resource(AudioState::default());
@@ -201,13 +202,88 @@ pub fn setup_ui(mut commands: Commands) {
                         })
                         .with_children(|parent| {
                             // Browse button
-                            spawn_button(parent, "Browse...", BrowseButton);
+                            parent
+                                .spawn((
+                                    Button,
+                                    Node {
+                                        width: Val::Px(150.0),
+                                        height: Val::Px(50.0),
+                                        margin: UiRect::all(Val::Px(10.0)),
+                                        border: UiRect::all(Val::Px(2.0)),
+                                        justify_content: JustifyContent::Center,
+                                        align_items: AlignItems::Center,
+                                        ..default()
+                                    },
+                                    BorderColor::all(Color::BLACK),
+                                    BackgroundColor(NORMAL_BUTTON),
+                                    BrowseButton,
+                                ))
+                                .with_children(|parent| {
+                                    parent.spawn((
+                                        Text::new("Browse..."),
+                                        TextFont {
+                                            font_size: 20.0,
+                                            ..default()
+                                        },
+                                        TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                                    ));
+                                });
 
                             // Previous file button
-                            spawn_button(parent, "< Prev", PrevFileButton);
+                            parent
+                                .spawn((
+                                    Button,
+                                    Node {
+                                        width: Val::Px(150.0),
+                                        height: Val::Px(50.0),
+                                        margin: UiRect::all(Val::Px(10.0)),
+                                        border: UiRect::all(Val::Px(2.0)),
+                                        justify_content: JustifyContent::Center,
+                                        align_items: AlignItems::Center,
+                                        ..default()
+                                    },
+                                    BorderColor::all(Color::BLACK),
+                                    BackgroundColor(NORMAL_BUTTON),
+                                    PrevFileButton,
+                                ))
+                                .with_children(|parent| {
+                                    parent.spawn((
+                                        Text::new("< Prev"),
+                                        TextFont {
+                                            font_size: 20.0,
+                                            ..default()
+                                        },
+                                        TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                                    ));
+                                });
 
                             // Next file button
-                            spawn_button(parent, "Next >", NextFileButton);
+                            parent
+                                .spawn((
+                                    Button,
+                                    Node {
+                                        width: Val::Px(150.0),
+                                        height: Val::Px(50.0),
+                                        margin: UiRect::all(Val::Px(10.0)),
+                                        border: UiRect::all(Val::Px(2.0)),
+                                        justify_content: JustifyContent::Center,
+                                        align_items: AlignItems::Center,
+                                        ..default()
+                                    },
+                                    BorderColor::all(Color::BLACK),
+                                    BackgroundColor(NORMAL_BUTTON),
+                                    NextFileButton,
+                                ))
+                                .with_children(|parent| {
+                                    parent.spawn((
+                                        Text::new("Next >"),
+                                        TextFont {
+                                            font_size: 20.0,
+                                            ..default()
+                                        },
+                                        TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                                    ));
+                                });
                         });
                 });
 
@@ -221,10 +297,60 @@ pub fn setup_ui(mut commands: Commands) {
                 })
                 .with_children(|parent| {
                     // Play button
-                    spawn_button(parent, "Play", PlayButton);
+                    parent
+                        .spawn((
+                            Button,
+                            Node {
+                                width: Val::Px(150.0),
+                                height: Val::Px(50.0),
+                                margin: UiRect::all(Val::Px(10.0)),
+                                border: UiRect::all(Val::Px(2.0)),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            BorderColor::all(Color::BLACK),
+                            BackgroundColor(NORMAL_BUTTON),
+                            PlayButton,
+                        ))
+                        .with_children(|parent| {
+                            parent.spawn((
+                                Text::new("Play"),
+                                TextFont {
+                                    font_size: 20.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                            ));
+                        });
 
                     // Stop button
-                    spawn_button(parent, "Stop", StopButton);
+                    parent
+                        .spawn((
+                            Button,
+                            Node {
+                                width: Val::Px(150.0),
+                                height: Val::Px(50.0),
+                                margin: UiRect::all(Val::Px(10.0)),
+                                border: UiRect::all(Val::Px(2.0)),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            BorderColor::all(Color::BLACK),
+                            BackgroundColor(NORMAL_BUTTON),
+                            StopButton,
+                        ))
+                        .with_children(|parent| {
+                            parent.spawn((
+                                Text::new("Stop"),
+                                TextFont {
+                                    font_size: 20.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                            ));
+                        });
                 });
 
             // Status text
@@ -244,36 +370,6 @@ pub fn setup_ui(mut commands: Commands) {
         });
 
     tracing::info!("UI setup complete");
-}
-
-/// Helper function to spawn a button
-fn spawn_button(parent: &mut ChildBuilder, label: &str, marker: impl Component) {
-    parent
-        .spawn((
-            Button,
-            Node {
-                width: Val::Px(150.0),
-                height: Val::Px(50.0),
-                margin: UiRect::all(Val::Px(10.0)),
-                border: UiRect::all(Val::Px(2.0)),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BorderColor(Color::BLACK),
-            BackgroundColor(NORMAL_BUTTON),
-            marker,
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                Text::new(label),
-                TextFont {
-                    font_size: 20.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.9, 0.9, 0.9)),
-            ));
-        });
 }
 
 /// Handle button interactions
