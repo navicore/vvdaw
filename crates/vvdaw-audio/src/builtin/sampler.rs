@@ -1,6 +1,5 @@
 //! Sample playback processor - plays loaded audio files.
 
-use std::sync::Arc;
 use vvdaw_core::SampleRate;
 use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin, PluginError, PluginInfo};
 
@@ -8,9 +7,21 @@ use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin, PluginError, PluginInfo};
 ///
 /// Plays back pre-loaded audio samples (e.g., from WAV files).
 /// Continuously loops the audio while playing.
+///
+/// # Real-Time Safety
+///
+/// Uses `Box<[f32]>` instead of `Arc<Vec<f32>>` for sample storage to ensure
+/// deterministic deallocation. When this processor is dropped (e.g., node removed
+/// from graph), the boxed slice deallocates predictably, avoiding potential
+/// non-deterministic Arc reference count decrements in the audio callback.
 pub struct SamplerProcessor {
     /// Audio samples (interleaved stereo: [L, R, L, R, ...])
-    samples: Arc<Vec<f32>>,
+    ///
+    /// Boxed slice ensures:
+    /// - Deterministic deallocation (single heap free)
+    /// - No reference counting overhead
+    /// - Real-time safe cleanup when node is removed
+    samples: Box<[f32]>,
     /// Current playback position (in frames, not samples)
     position: usize,
     /// Sample rate of the loaded audio
@@ -27,9 +38,14 @@ impl SamplerProcessor {
     /// # Arguments
     /// * `samples` - Interleaved stereo audio data [L, R, L, R, ...]
     /// * `sample_rate` - Sample rate of the loaded audio
+    ///
+    /// # Real-Time Safety
+    ///
+    /// Converts `Vec<f32>` to `Box<[f32]>` for deterministic memory management.
+    /// The conversion happens here (UI thread), not in the audio callback.
     pub fn new(samples: Vec<f32>, sample_rate: SampleRate) -> Self {
         Self {
-            samples: Arc::new(samples),
+            samples: samples.into_boxed_slice(),
             position: 0,
             audio_sample_rate: sample_rate,
             engine_sample_rate: 48000, // Will be updated in initialize()

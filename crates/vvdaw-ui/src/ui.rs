@@ -493,13 +493,39 @@ fn load_and_send_wav(
 /// Load a WAV file and convert to interleaved stereo f32 samples
 ///
 /// Returns (samples, `sample_rate`) where samples is [L, R, L, R, ...]
+///
+/// # Safety Limits
+///
+/// - Maximum file size: 500MB (prevents UI freezing on multi-GB files)
+/// - Bit depth: 1-31 bits (prevents integer overflow)
+/// - Validates file exists and is readable
 fn load_wav_file(path: &str) -> Result<(Vec<f32>, u32), String> {
+    // Validate file size before loading (500MB limit)
+    const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024; // 500MB
+    let metadata =
+        std::fs::metadata(path).map_err(|e| format!("Failed to read file metadata: {e}"))?;
+
+    if metadata.len() > MAX_FILE_SIZE {
+        return Err(format!(
+            "File too large: {:.1}MB (max 500MB). Large files should be streamed, not loaded entirely into memory.",
+            metadata.len() as f64 / (1024.0 * 1024.0)
+        ));
+    }
+
     let mut reader =
         hound::WavReader::open(path).map_err(|e| format!("Failed to open WAV file: {e}"))?;
 
     let spec = reader.spec();
     let sample_rate = spec.sample_rate;
     let channels = spec.channels as usize;
+
+    // Validate bit depth to prevent integer overflow
+    if spec.bits_per_sample == 0 || spec.bits_per_sample > 31 {
+        return Err(format!(
+            "Unsupported bit depth: {} bits (supported: 1-31)",
+            spec.bits_per_sample
+        ));
+    }
 
     tracing::debug!(
         "WAV spec: {} channels, {}Hz, {} bits",
@@ -516,7 +542,8 @@ fn load_wav_file(path: &str) -> Result<(Vec<f32>, u32), String> {
             .map_err(|e| format!("Failed to read samples: {e}"))?,
         hound::SampleFormat::Int => {
             // Convert integer samples to f32 [-1.0, 1.0]
-            let max_value = (1 << (spec.bits_per_sample - 1)) as f32;
+            // Safe: bits_per_sample is validated to be 1-31 above
+            let max_value = (1_i32 << (spec.bits_per_sample - 1)) as f32;
             reader
                 .samples::<i32>()
                 .map(|s| s.map(|v| v as f32 / max_value))
