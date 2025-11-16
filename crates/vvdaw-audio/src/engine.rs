@@ -89,11 +89,31 @@ impl AudioEngine {
                             // TODO: Set parameter on node via graph
                         }
                         AudioCommand::AddNode => {
-                            // REAL-TIME SAFE: No tracing in audio callback
+                            // ⚠️ NOT REAL-TIME SAFE: AudioGraph::add_node() allocates memory!
+                            //
+                            // This code path violates real-time safety constraints:
+                            // - HashMap::insert allocates (graph.rs:220)
+                            // - Vec allocation for buffers (graph.rs:363-364)
+                            // - Topological sort allocates (graph.rs:381-398)
+                            //
+                            // IMPACT: Adding nodes in the audio callback can cause:
+                            // - Audio dropouts/glitches from heap allocation
+                            // - Non-deterministic latency spikes
+                            // - Potential priority inversion if allocator locks
+                            //
+                            // WORKAROUNDS (for production use):
+                            // 1. Pre-allocate node pool with fixed capacity
+                            // 2. Use lock-free data structures (crossbeam, etc.)
+                            // 3. Move graph modifications to separate RT-safe command queue
+                            // 4. Process AddNode commands in a dedicated high-priority thread
+                            //
+                            // For this POC, we accept the allocation risk since:
+                            // - Nodes are added infrequently (user interaction, not per-sample)
+                            // - Modern allocators are usually fast enough for UI-driven events
+                            // - This demonstrates the architecture without over-engineering
+
                             // Receive the plugin instance from the plugin channel
                             if let Ok(plugin) = channels.plugin_rx.try_recv() {
-                                // Ignore errors - can't log in audio callback
-
                                 // LIMITATION: Plugin source is Unknown when added via engine
                                 // This means plugins added through the audio engine won't be
                                 // serializable in sessions. To fix this, we would need to:
@@ -101,7 +121,14 @@ impl AudioEngine {
                                 // 2. Update all code that sends plugins through channels
                                 // 3. Store source info when loading plugins in UI thread
                                 // For now, session save will error if graph contains Unknown sources.
-                                let _ = graph.add_node(plugin, crate::graph::PluginSource::Unknown);
+                                if let Ok(node_id) =
+                                    graph.add_node(plugin, crate::graph::PluginSource::Unknown)
+                                {
+                                    // Send NodeAdded event back to UI with the assigned ID
+                                    // Drop event if queue is full - UI will handle missing events gracefully
+                                    let _ =
+                                        channels.event_tx.push(AudioEvent::NodeAdded { node_id });
+                                }
                             }
                         }
                         AudioCommand::RemoveNode(node_id) => {

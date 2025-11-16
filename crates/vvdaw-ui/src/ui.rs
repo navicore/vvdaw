@@ -21,6 +21,12 @@ pub enum PlaybackState {
 pub struct AudioState {
     pub playback: PlaybackState,
     pub status_message: String,
+    /// Currently active sampler node ID (None if no sampler loaded)
+    ///
+    /// This tracks the sampler added by the UI to prevent the race condition
+    /// where rapid next/prev clicking adds multiple samplers to the graph.
+    /// Before adding a new sampler, we remove the previous one.
+    pub current_sampler_node: Option<usize>,
 }
 
 /// File path state resource
@@ -424,6 +430,11 @@ pub fn poll_audio_events(
                     tracing::trace!("Peak ch{channel}: {level:.3}");
                 }
             }
+            AudioEvent::NodeAdded { node_id } => {
+                tracing::debug!("Node added to graph with ID: {node_id}");
+                // Track this as the current sampler (assuming UI only adds samplers)
+                audio_state.current_sampler_node = Some(node_id);
+            }
         }
     }
 
@@ -490,6 +501,20 @@ pub fn poll_wav_load_tasks(
                         sample_rate,
                     ));
 
+                    // Remove old sampler if one exists to prevent multiple samplers
+                    // This prevents the race condition where rapid next/prev clicking
+                    // adds multiple samplers to the graph.
+                    if let Some(old_node_id) = audio_state.current_sampler_node {
+                        tracing::debug!("Removing old sampler node {old_node_id}");
+                        if let Err(e) =
+                            audio_channels.send_command(AudioCommand::RemoveNode(old_node_id))
+                        {
+                            tracing::warn!("Failed to remove old sampler: {e}");
+                            // Continue anyway - the new sampler will still be added
+                        }
+                        audio_state.current_sampler_node = None;
+                    }
+
                     // Send sampler to audio thread
                     if let Err(e) = audio_channels.send_plugin(processor) {
                         tracing::error!("Failed to send sampler to audio thread: {e}");
@@ -498,6 +523,8 @@ pub fn poll_wav_load_tasks(
                     }
 
                     // Send AddNode command
+                    // The audio thread will send back a NodeAdded event with the ID,
+                    // which we'll handle in poll_audio_events to track the new sampler
                     if let Err(e) = audio_channels.send_command(AudioCommand::AddNode) {
                         tracing::error!("Failed to send AddNode command: {e}");
                         audio_state.status_message = format!("Error: {e}");

@@ -57,6 +57,14 @@ pub enum AudioEvent {
         /// Peak level value
         level: Sample,
     },
+    /// Node was added to the graph
+    ///
+    /// Sent after `AddNode` command succeeds, reports the assigned node ID.
+    /// This allows the UI to track node IDs for later removal/modification.
+    NodeAdded {
+        /// The ID assigned to the newly added node
+        node_id: usize,
+    },
 }
 
 /// Type alias for command channel (UI -> Audio)

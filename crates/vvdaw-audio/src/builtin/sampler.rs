@@ -76,12 +76,31 @@ impl Plugin for SamplerProcessor {
     ) -> Result<(), PluginError> {
         self.engine_sample_rate = sample_rate;
 
-        // Warn if sample rates don't match (we'll just play at wrong speed for now)
+        // ⚠️ LIMITATION: No sample rate conversion implemented
+        //
+        // If the loaded audio file's sample rate doesn't match the engine sample rate,
+        // playback will be at the wrong speed:
+        // - 44.1kHz file on 48kHz engine → plays ~8.8% faster, pitch shifted up
+        // - 48kHz file on 44.1kHz engine → plays ~8.2% slower, pitch shifted down
+        //
+        // WORKAROUNDS (for production use):
+        // 1. Resample audio files offline before loading (using ffmpeg, sox, etc.)
+        // 2. Implement real-time sample rate conversion (SRC):
+        //    - Linear interpolation (fast, lower quality)
+        //    - libsamplerate / rubberband (high quality, more CPU)
+        //    - sinc resampling (best quality, highest CPU cost)
+        // 3. Load-time resampling in the UI thread before sending to audio thread
+        //
+        // For this POC, we accept the limitation because:
+        // - Most modern audio is 44.1kHz or 48kHz
+        // - Sample rate conversion is complex and CPU-intensive
+        // - Users can easily resample files offline if needed
         if self.audio_sample_rate != sample_rate {
             tracing::warn!(
-                "Sample rate mismatch: audio is {}Hz, engine is {}Hz. Playback speed will be incorrect.",
+                "Sample rate mismatch: audio is {}Hz, engine is {}Hz. Playback speed will be incorrect (~{:.1}%).",
                 self.audio_sample_rate,
-                sample_rate
+                sample_rate,
+                ((f64::from(sample_rate) / f64::from(self.audio_sample_rate) - 1.0) * 100.0).abs()
             );
         }
 

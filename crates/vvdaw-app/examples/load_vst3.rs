@@ -136,6 +136,9 @@ fn main() -> Result<()> {
                 AudioEvent::Error(msg) => {
                     eprintln!("✗ Audio error: {msg}");
                 }
+                AudioEvent::NodeAdded { node_id } => {
+                    println!("→ Node {node_id} added to audio graph");
+                }
             }
         }
 
