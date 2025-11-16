@@ -8,6 +8,7 @@ members = [
     "crates/vvdaw-clap",
     "crates/vvdaw-comms",
     "crates/vvdaw-ui",
+    "crates/vvdaw-ui-3d",
     "crates/vvdaw-app",
 ]
 
@@ -31,6 +32,7 @@ vvdaw-vst3 = { path = "crates/vvdaw-vst3" }
 vvdaw-clap = { path = "crates/vvdaw-clap" }
 vvdaw-comms = { path = "crates/vvdaw-comms" }
 vvdaw-ui = { path = "crates/vvdaw-ui" }
+vvdaw-ui-3d = { path = "crates/vvdaw-ui-3d" }
 
 # External dependencies - versions centralized here
 bevy = "0.15"

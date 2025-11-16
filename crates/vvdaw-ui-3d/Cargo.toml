@@ -1,0 +1,44 @@
+[package]
+name = "vvdaw-ui-3d"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Bevy game engine with 3D rendering
+bevy = { version = "0.15", default-features = false, features = [
+    "bevy_asset",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_pbr",        # PBR rendering for 3D
+    "bevy_render",
+    "bevy_sprite",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_winit",
+    "multi_threaded",
+    "png",
+    "x11",             # Linux support
+    "wayland",         # Linux Wayland support
+] }
+
+# Audio integration
+vvdaw-audio = { path = "../vvdaw-audio" }
+vvdaw-comms = { path = "../vvdaw-comms" }
+vvdaw-core = { path = "../vvdaw-core" }
+vvdaw-plugin = { path = "../vvdaw-plugin" }
+
+# Logging
+tracing = "0.1"
+
+[dev-dependencies]
+anyhow = "1.0"
