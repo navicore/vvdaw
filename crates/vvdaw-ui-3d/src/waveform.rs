@@ -17,6 +17,15 @@ pub struct WaveformData {
     pub samples: Vec<f32>,
     /// Sample rate of the loaded audio
     pub sample_rate: u32,
+
+    /// Streaming waveform data: peak values from audio thread
+    /// Each tuple is (`left_peak`, `right_peak`) for one audio buffer
+    pub streaming_peaks: Vec<(f32, f32)>,
+    /// Current playback position (frame number) from audio thread
+    pub current_position: u64,
+    /// Maximum number of peak samples to store (ring buffer for scrolling display)
+    /// At ~90 samples/sec, 9000 samples = ~100 seconds of history
+    pub max_streaming_samples: usize,
 }
 
 impl WaveformData {
@@ -25,7 +34,41 @@ impl WaveformData {
         Self {
             samples,
             sample_rate,
+            streaming_peaks: Vec::new(),
+            current_position: 0,
+            max_streaming_samples: 9000, // ~100 seconds at 90 samples/sec
         }
+    }
+
+    /// Append a new peak sample from the audio thread
+    ///
+    /// Maintains a ring buffer of the most recent peak samples
+    pub fn push_streaming_peak(&mut self, position: u64, left_peak: f32, right_peak: f32) {
+        self.current_position = position;
+
+        // Add new peak sample
+        self.streaming_peaks.push((left_peak, right_peak));
+
+        // Maintain ring buffer size
+        if self.streaming_peaks.len() > self.max_streaming_samples {
+            self.streaming_peaks.remove(0);
+        }
+    }
+
+    /// Clear streaming data (e.g., when loading new audio)
+    pub fn clear_streaming(&mut self) {
+        self.streaming_peaks.clear();
+        self.current_position = 0;
+    }
+
+    /// Get streaming peak data for visualization
+    pub fn streaming_left_channel(&self) -> Vec<f32> {
+        self.streaming_peaks.iter().map(|(l, _)| *l).collect()
+    }
+
+    /// Get streaming peak data for visualization
+    pub fn streaming_right_channel(&self) -> Vec<f32> {
+        self.streaming_peaks.iter().map(|(_, r)| *r).collect()
     }
 
     /// Get the number of stereo frames

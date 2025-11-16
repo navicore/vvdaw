@@ -10,8 +10,28 @@ keywords.workspace = true
 categories.workspace = true
 readme.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+# Allow unsafe for Send+Sync impls on EventReceiver wrapper (lock-free channel)
+# All other workspace lints still apply via inheritance
+unsafe_code = "allow"
+
+[lints.clippy]
+# Inherit workspace clippy lints
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow"
+module_name_repetitions = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+float_cmp = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+missing_const_for_fn = "allow"
 
 [dependencies]
 # Bevy game engine with 3D rendering

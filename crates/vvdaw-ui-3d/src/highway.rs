@@ -8,6 +8,22 @@ use crate::waveform::{WaveformData, WaveformMeshConfig, generate_channel_mesh};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
+use vvdaw_comms::{AudioEvent, EventReceiver};
+
+/// Resource wrapping the audio event receiver channel
+pub struct AudioEventChannel(pub EventReceiver);
+
+// SAFETY: This is safe because:
+// 1. EventReceiver (rtrb::Consumer) is specifically designed for lock-free single-consumer use
+// 2. Bevy guarantees single-threaded access to Resources (no concurrent access)
+// 3. The audio thread (producer) and UI thread (consumer) never access the same end
+// 4. rtrb uses atomic operations internally for thread-safe communication
+#[allow(unsafe_code)]
+unsafe impl Send for AudioEventChannel {}
+#[allow(unsafe_code)]
+unsafe impl Sync for AudioEventChannel {}
+
+impl Resource for AudioEventChannel {}
 
 pub struct HighwayPlugin;
 
@@ -17,6 +33,7 @@ impl Plugin for HighwayPlugin {
             Startup,
             (setup_highway, generate_test_waveform_if_empty).chain(),
         )
+        .add_systems(Update, process_audio_events)
         .add_systems(Update, update_waveform_meshes);
     }
 }
@@ -214,5 +231,45 @@ fn update_waveform_meshes(
         }
     } else {
         tracing::warn!("Right wall entity not found");
+    }
+}
+
+/// Process audio events from the audio thread
+///
+/// Reads waveform sample events and updates the `WaveformData` resource
+#[allow(clippy::needless_pass_by_value)] // Bevy system parameters must be passed by value
+fn process_audio_events(
+    event_channel: Option<ResMut<AudioEventChannel>>,
+    mut waveform: ResMut<WaveformData>,
+) {
+    // Early return if audio event channel is not available (e.g., in basic examples)
+    let Some(mut channel) = event_channel else {
+        return;
+    };
+
+    // Process all available audio events (non-blocking)
+    while let Ok(event) = channel.0.pop() {
+        match event {
+            AudioEvent::WaveformSample {
+                position,
+                left_peak,
+                right_peak,
+            } => {
+                // Update waveform data with new streaming sample
+                waveform.push_streaming_peak(position, left_peak, right_peak);
+            }
+            AudioEvent::Started => {
+                tracing::info!("Audio playback started");
+            }
+            AudioEvent::Stopped => {
+                tracing::info!("Audio playback stopped");
+            }
+            AudioEvent::Error(msg) => {
+                tracing::error!("Audio error: {}", msg);
+            }
+            _ => {
+                // Ignore other events (NodeAdded, PeakLevel, etc.)
+            }
+        }
     }
 }
