@@ -10,7 +10,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use vvdaw_audio::{AudioConfig, AudioEngine};
 use vvdaw_comms::create_channels;
 use vvdaw_ui::VvdawUiPlugin;
-use vvdaw_ui_3d::{waveform::WaveformData, Highway3dPlugin};
+use vvdaw_ui_3d::{Highway3dPlugin, waveform::WaveformData};
 
 /// Visual Virtual DAW - An experimental 3D audio workstation
 #[derive(Parser, Debug)]
@@ -50,7 +50,7 @@ fn main() -> Result<()> {
     tracing::info!("Starting vvdaw with UI mode: {:?}", args.ui);
 
     match args.ui {
-        UiMode::TwoD => run_2d_ui(args)?,
+        UiMode::TwoD => run_2d_ui(&args)?,
         UiMode::ThreeD => run_3d_ui(args)?,
     }
 
@@ -58,7 +58,7 @@ fn main() -> Result<()> {
 }
 
 /// Run the application with 2D UI
-fn run_2d_ui(args: Args) -> Result<()> {
+fn run_2d_ui(args: &Args) -> Result<()> {
     if args.wav_file.is_some() {
         tracing::warn!("WAV file argument is only used in 3D mode, ignoring");
     }
@@ -133,7 +133,7 @@ fn run_3d_ui(args: Args) -> Result<()> {
             data
         }
         Err(e) => {
-            anyhow::bail!("Failed to load WAV file: {}", e);
+            anyhow::bail!("Failed to load WAV file: {e}");
         }
     };
 
@@ -226,10 +226,7 @@ fn load_wav_file(path: &str) -> Result<WaveformData, String> {
         }
         _ => {
             // More than 2 channels: take first 2
-            tracing::warn!(
-                "WAV file has {} channels, using only first 2",
-                channels
-            );
+            tracing::warn!("WAV file has {} channels, using only first 2", channels);
             let mut stereo = Vec::with_capacity((raw_samples.len() / channels) * 2);
             for chunk in raw_samples.chunks(channels) {
                 stereo.push(chunk[0]); // Left
