@@ -51,7 +51,7 @@ fn main() -> Result<()> {
 
     match args.ui {
         UiMode::TwoD => run_2d_ui(&args)?,
-        UiMode::ThreeD => run_3d_ui(args)?,
+        UiMode::ThreeD => run_3d_ui(&args)?,
     }
 
     Ok(())
@@ -107,10 +107,11 @@ fn run_2d_ui(args: &Args) -> Result<()> {
 }
 
 /// Run the application with 3D highway UI
-fn run_3d_ui(args: Args) -> Result<()> {
+fn run_3d_ui(args: &Args) -> Result<()> {
     let wav_path = args
         .wav_file
-        .unwrap_or_else(|| "test_data/new-a-155.wav".to_string());
+        .as_deref()
+        .unwrap_or("test_data/new-a-155.wav");
 
     tracing::info!("Loading WAV file: {}", wav_path);
     println!();
@@ -123,7 +124,7 @@ fn run_3d_ui(args: Args) -> Result<()> {
     println!();
 
     // Load WAV file
-    let waveform_data = match load_wav_file(&wav_path) {
+    let waveform_data = match load_wav_file(wav_path) {
         Ok(data) => {
             tracing::info!(
                 "Loaded: {} frames at {}Hz",
@@ -159,9 +160,40 @@ fn run_3d_ui(args: Args) -> Result<()> {
 /// Load a WAV file and return waveform data
 fn load_wav_file(path: &str) -> Result<WaveformData, String> {
     use hound::WavReader;
+    use std::path::Path;
 
     // Validate file size (500MB limit)
     const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024;
+
+    // Validate and sanitize path
+    let path_obj = Path::new(path);
+
+    // Check for path traversal attempts
+    if path.contains("..") {
+        return Err("Path traversal not allowed".to_string());
+    }
+
+    // Validate file extension
+    if let Some(ext) = path_obj.extension() {
+        if ext.to_str() != Some("wav") {
+            return Err(format!(
+                "Invalid file extension: expected .wav, got .{}",
+                ext.to_string_lossy()
+            ));
+        }
+    } else {
+        return Err("File must have .wav extension".to_string());
+    }
+
+    // Check if file exists before attempting to read metadata
+    if !path_obj.exists() {
+        return Err(format!("File not found: {path}"));
+    }
+
+    if !path_obj.is_file() {
+        return Err(format!("Path is not a file: {path}"));
+    }
+
     let metadata =
         std::fs::metadata(path).map_err(|e| format!("Failed to read file metadata: {e}"))?;
 
@@ -237,4 +269,73 @@ fn load_wav_file(path: &str) -> Result<WaveformData, String> {
     };
 
     Ok(WaveformData::new(stereo_samples, sample_rate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_wav_file_not_found() {
+        let result = load_wav_file("nonexistent.wav");
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.contains("File not found"));
+        }
+    }
+
+    #[test]
+    fn test_load_wav_file_path_traversal() {
+        let result = load_wav_file("../../../etc/passwd");
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert_eq!(e, "Path traversal not allowed");
+        }
+    }
+
+    #[test]
+    fn test_load_wav_file_invalid_extension() {
+        let result = load_wav_file("test.mp3");
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.contains("Invalid file extension"));
+        }
+    }
+
+    #[test]
+    fn test_load_wav_file_no_extension() {
+        let result = load_wav_file("testfile");
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert_eq!(e, "File must have .wav extension");
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_load_wav_file_directory() {
+        // On Linux, /tmp should exist and be a directory
+        let result = load_wav_file("/tmp");
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.contains("File must have .wav extension"));
+        }
+    }
+
+    #[test]
+    fn test_load_wav_file_valid() {
+        // This test only runs if the test data file exists
+        let test_path = "test_data/new-a-155.wav";
+        if std::path::Path::new(test_path).exists() {
+            let result = load_wav_file(test_path);
+            assert!(
+                result.is_ok(),
+                "Failed to load test WAV file: {:?}",
+                result.err()
+            );
+            let data = result.unwrap();
+            assert!(data.frame_count() > 0);
+            assert!(data.sample_rate > 0);
+        }
+    }
 }
