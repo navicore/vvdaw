@@ -52,6 +52,9 @@ impl AudioEngine {
         // Flag to track if we're running
         let mut is_running = false;
 
+        // Frame position counter for waveform synchronization
+        let mut frame_position: u64 = 0;
+
         // Pre-allocate de-interleaved buffers for audio processing
         // IMPORTANT: Pre-allocated to max block size to avoid allocations in audio callback
         let num_channels = config.channels as usize;
@@ -218,19 +221,30 @@ impl AudioEngine {
                         data[remaining_start..].fill(0.0);
                     }
 
-                    // Send peak levels to UI (every N samples to avoid flooding)
-                    // TODO: Make this more efficient with downsampling
-                    if !data.is_empty() {
-                        // Use fold instead of max_by to avoid panic on NaN
-                        let peak = data.iter().fold(0.0_f32, |max, &s| max.max(s.abs()));
+                    // Send waveform samples to UI for visualization
+                    // Compute peak values for left and right channels from interleaved data
+                    if !data.is_empty() && num_channels >= 2 {
+                        // For stereo: data is [L, R, L, R, ...]
+                        // Compute peaks for each channel separately
+                        let mut left_peak = 0.0_f32;
+                        let mut right_peak = 0.0_f32;
 
-                        // Drop peak events if queue is full - they're informational only
-                        // and will be replaced by the next buffer's peaks anyway
-                        let _ = channels.event_tx.push(AudioEvent::PeakLevel {
-                            channel: 0,
-                            level: peak,
+                        for frame in data.chunks_exact(num_channels) {
+                            left_peak = left_peak.max(frame[0].abs());
+                            right_peak = right_peak.max(frame[1].abs());
+                        }
+
+                        // Send waveform sample event with position for synchronization
+                        // Drop if queue is full - they're informational and will be replaced
+                        let _ = channels.event_tx.push(AudioEvent::WaveformSample {
+                            position: frame_position,
+                            left_peak,
+                            right_peak,
                         });
                     }
+
+                    // Increment frame position for next buffer
+                    frame_position = frame_position.wrapping_add(frames_per_buffer as u64);
                 } else {
                     // Silence when not running
                     data.fill(0.0);

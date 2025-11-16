@@ -139,6 +139,9 @@ fn main() -> Result<()> {
                 AudioEvent::NodeAdded { node_id } => {
                     println!("→ Node {node_id} added to audio graph");
                 }
+                AudioEvent::WaveformSample { .. } => {
+                    // Ignore waveform samples in this example
+                }
             }
         }
 

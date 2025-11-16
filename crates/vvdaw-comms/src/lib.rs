@@ -65,6 +65,18 @@ pub enum AudioEvent {
         /// The ID assigned to the newly added node
         node_id: usize,
     },
+    /// Waveform sample data for visualization
+    ///
+    /// Sent from audio thread with peak values for the current audio buffer.
+    /// Position indicates the frame number in the audio stream for sync.
+    WaveformSample {
+        /// Frame position in the audio stream (accumulates continuously)
+        position: u64,
+        /// Left channel peak value for this buffer
+        left_peak: Sample,
+        /// Right channel peak value for this buffer
+        right_peak: Sample,
+    },
 }
 
 /// Type alias for command channel (UI -> Audio)
