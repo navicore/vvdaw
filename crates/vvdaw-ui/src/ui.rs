@@ -1,7 +1,9 @@
 //! UI components and systems
 
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task};
 use crossbeam_channel::{Receiver, Sender};
+use futures_lite::future;
 use vvdaw_comms::{AudioCommand, AudioEvent};
 
 use crate::AudioChannelResource;
@@ -49,6 +51,20 @@ impl Default for FileDialogChannel {
         let (sender, receiver) = crossbeam_channel::unbounded();
         Self { sender, receiver }
     }
+}
+
+/// Result of async WAV file loading
+type WavLoadResult = Result<(Vec<f32>, u32, String), String>;
+
+/// Resource tracking pending async WAV file loads
+///
+/// WAV files are loaded asynchronously to prevent UI freezing on large files (up to 500MB).
+/// Each task runs on Bevy's `AsyncComputeTaskPool` and returns the loaded samples when complete.
+#[derive(Resource, Default)]
+pub struct PendingWavLoads {
+    /// Active background loading tasks
+    /// Each task returns `(samples, sample_rate, file_path)` or error message
+    pub tasks: Vec<Task<WavLoadResult>>,
 }
 
 /// Marker component for the play button
@@ -105,6 +121,7 @@ pub fn setup_ui(mut commands: Commands) {
     commands.insert_resource(AudioState::default());
     commands.insert_resource(FilePathState::default());
     commands.insert_resource(FileDialogChannel::default());
+    commands.insert_resource(PendingWavLoads::default());
 
     // Spawn a camera
     commands.spawn(Camera2d);
@@ -261,6 +278,7 @@ pub fn handle_button_interactions(
     mut audio_state: ResMut<AudioState>,
     mut file_state: ResMut<FilePathState>,
     file_dialog_channel: Res<FileDialogChannel>,
+    mut pending_loads: ResMut<PendingWavLoads>,
 ) {
     for (interaction, mut color, play, stop, next, prev, browse) in &mut interaction_query {
         match *interaction {
@@ -324,8 +342,8 @@ pub fn handle_button_interactions(
                         // Update current path
                         file_state.current_path.clone_from(&path);
 
-                        // Load WAV file and send to audio thread
-                        load_and_send_wav(&path, &audio_channels, &mut audio_state);
+                        // Load WAV file asynchronously
+                        load_and_send_wav(&path, &mut pending_loads, &mut audio_state);
                     }
                 }
 
@@ -347,8 +365,8 @@ pub fn handle_button_interactions(
                         // Update current path
                         file_state.current_path.clone_from(&path);
 
-                        // Load WAV file and send to audio thread
-                        load_and_send_wav(&path, &audio_channels, &mut audio_state);
+                        // Load WAV file asynchronously
+                        load_and_send_wav(&path, &mut pending_loads, &mut audio_state);
                     }
                 }
             }
@@ -421,9 +439,9 @@ pub fn poll_audio_events(
 #[allow(clippy::needless_pass_by_value)]
 pub fn poll_file_dialog(
     file_dialog_channel: Res<FileDialogChannel>,
-    audio_channels: Res<AudioChannelResource>,
     mut audio_state: ResMut<AudioState>,
     mut file_state: ResMut<FilePathState>,
+    mut pending_loads: ResMut<PendingWavLoads>,
 ) {
     // Non-blocking check for file dialog results
     while let Ok(path_string) = file_dialog_channel.receiver.try_recv() {
@@ -435,59 +453,118 @@ pub fn poll_file_dialog(
             file_state.loaded_files.push(path_string.clone());
         }
 
-        // Load and send to audio thread
-        load_and_send_wav(&path_string, &audio_channels, &mut audio_state);
+        // Load asynchronously in background thread
+        load_and_send_wav(&path_string, &mut pending_loads, &mut audio_state);
     }
 }
 
-/// Load a WAV file and send the sampler processor to the audio thread
+/// Poll for completed async WAV loading tasks and send processors to audio thread
 ///
-/// This is the ONLY correct way to load audio - all file I/O happens in the UI thread,
-/// and only the ready-to-use processor is sent to the real-time audio thread.
-fn load_and_send_wav(
-    path: &str,
-    audio_channels: &AudioChannelResource,
-    audio_state: &mut AudioState,
+/// This system checks all pending async tasks and processes completed ones.
+/// Completed tasks are removed from the pending list.
+#[allow(clippy::needless_pass_by_value)]
+pub fn poll_wav_load_tasks(
+    mut pending_loads: ResMut<PendingWavLoads>,
+    audio_channels: Res<AudioChannelResource>,
+    mut audio_state: ResMut<AudioState>,
 ) {
-    tracing::info!("Loading WAV file: {path}");
+    // Check each pending task for completion (non-blocking)
+    let mut completed_indices = Vec::new();
 
-    // Load WAV file (blocking is OK - we're in UI thread, not audio thread)
-    match load_wav_file(path) {
-        Ok((samples, sample_rate)) => {
-            tracing::info!("Loaded {} frames at {}Hz", samples.len() / 2, sample_rate);
+    for (idx, task) in pending_loads.tasks.iter_mut().enumerate() {
+        // Non-blocking poll - returns Some if task is ready
+        if let Some(result) = future::block_on(future::poll_once(task)) {
+            completed_indices.push(idx);
 
-            // Create sampler processor with loaded audio
-            let processor = Box::new(vvdaw_audio::builtin::sampler::SamplerProcessor::new(
-                samples,
-                sample_rate,
-            ));
+            match result {
+                Ok((samples, sample_rate, path)) => {
+                    tracing::info!(
+                        "WAV load task completed: {} frames at {}Hz",
+                        samples.len() / 2,
+                        sample_rate
+                    );
 
-            // Send sampler to audio thread
-            if let Err(e) = audio_channels.send_plugin(processor) {
-                tracing::error!("Failed to send sampler to audio thread: {e}");
-                audio_state.status_message = format!("Error: {e}");
-                return;
+                    // Create sampler processor with loaded audio
+                    let processor = Box::new(vvdaw_audio::builtin::sampler::SamplerProcessor::new(
+                        samples,
+                        sample_rate,
+                    ));
+
+                    // Send sampler to audio thread
+                    if let Err(e) = audio_channels.send_plugin(processor) {
+                        tracing::error!("Failed to send sampler to audio thread: {e}");
+                        audio_state.status_message = format!("Error: {e}");
+                        continue;
+                    }
+
+                    // Send AddNode command
+                    if let Err(e) = audio_channels.send_command(AudioCommand::AddNode) {
+                        tracing::error!("Failed to send AddNode command: {e}");
+                        audio_state.status_message = format!("Error: {e}");
+                    } else {
+                        audio_state.status_message = format!(
+                            "Loaded: {}",
+                            std::path::Path::new(&path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("file")
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("WAV load task failed: {e}");
+                    audio_state.status_message = format!("Load error: {e}");
+                }
             }
-
-            // Send AddNode command
-            if let Err(e) = audio_channels.send_command(AudioCommand::AddNode) {
-                tracing::error!("Failed to send AddNode command: {e}");
-                audio_state.status_message = format!("Error: {e}");
-            } else {
-                audio_state.status_message = format!(
-                    "Loaded: {}",
-                    std::path::Path::new(path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("file")
-                );
-            }
-        }
-        Err(e) => {
-            tracing::error!("Failed to load WAV file: {e}");
-            audio_state.status_message = format!("Load error: {e}");
         }
     }
+
+    // Remove completed tasks (iterate in reverse to maintain indices)
+    for idx in completed_indices.into_iter().rev() {
+        drop(pending_loads.tasks.swap_remove(idx));
+    }
+}
+
+/// Load a WAV file asynchronously and queue it for sending to the audio thread
+///
+/// This spawns a background task to load the file, preventing UI freezing on large files.
+/// The actual sending happens in `poll_wav_load_tasks` when the task completes.
+fn load_and_send_wav(
+    path: &str,
+    pending_loads: &mut PendingWavLoads,
+    audio_state: &mut AudioState,
+) {
+    tracing::info!("Starting async WAV file load: {path}");
+    audio_state.status_message = format!(
+        "Loading: {}...",
+        std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+    );
+
+    // Spawn async task on compute thread pool
+    let path_owned = path.to_string();
+    let task_pool = AsyncComputeTaskPool::get();
+    let task = task_pool.spawn(async move {
+        // Load WAV file in background thread
+        match load_wav_file(&path_owned) {
+            Ok((samples, sample_rate)) => {
+                tracing::info!(
+                    "Async load complete: {} frames at {}Hz",
+                    samples.len() / 2,
+                    sample_rate
+                );
+                Ok((samples, sample_rate, path_owned))
+            }
+            Err(e) => {
+                tracing::error!("Async load failed: {e}");
+                Err(e)
+            }
+        }
+    });
+
+    pending_loads.tasks.push(task);
 }
 
 /// Load a WAV file and convert to interleaved stereo f32 samples

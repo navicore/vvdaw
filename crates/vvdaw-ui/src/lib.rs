@@ -40,6 +40,7 @@ impl Plugin for VvdawUiPlugin {
                 ui::update_file_path_text,
                 ui::poll_audio_events,
                 ui::poll_file_dialog,
+                ui::poll_wav_load_tasks,
             ),
         );
     }
