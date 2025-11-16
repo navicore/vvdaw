@@ -27,6 +27,7 @@ bevy = { version = "0.15", default-features = false, features = [
     "bevy_winit",
     "multi_threaded",
     "png",
+    "tonemapping_luts", # Required for proper color rendering
     "x11",             # Linux support
     "wayland",         # Linux Wayland support
 ] }
@@ -42,3 +43,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 anyhow = "1.0"
+hound = "3.5"  # WAV file I/O for examples

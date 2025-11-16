@@ -11,11 +11,11 @@ An immersive 3D interface where audio tracks are represented as infinite highway
 
 This is one of several experimental UI approaches. The modular design allows for multiple 3D interfaces to coexist.
 
-## Current Status: MVP Foundation
+## Current Status: Waveform Visualization POC
 
 ✅ **Basic 3D scene rendering**
 - Grid road surface
-- Static cyan waveform walls (placeholder geometry)
+- Dynamic waveform walls generated from audio data
 - Atmospheric lighting (dark cyan/teal aesthetic)
 - Clear dark blue background
 
@@ -24,6 +24,13 @@ This is one of several experimental UI approaches. The modular design allows for
 - Q/E - Move up/down
 - Shift - Speed boost (3x)
 - Right Mouse + Move - Look around
+
+✅ **Audio → 3D Mesh Pipeline**
+- `WaveformData` resource stores loaded audio samples
+- Sample de-interleaving (left/right channels)
+- Procedural mesh generation from sample data
+- Dynamic mesh updates when audio changes
+- Test data generator (sine waves for POC)
 
 ## Running the Example
 
@@ -46,27 +53,56 @@ Controls:
 - `scene.rs` - Lighting and environment
 - `camera.rs` - Flight camera system
 - `highway.rs` - Road and wall geometry
+- `waveform.rs` - Audio data storage and mesh generation
+
+#### Waveform Pipeline
+
+```
+Audio Samples (Vec<f32>)
+         ↓
+WaveformData Resource
+         ↓
+De-interleave (L/R channels)
+         ↓
+generate_channel_mesh()
+         ↓
+Bevy Mesh (vertices, indices, normals)
+         ↓
+Rendered as 3D geometry
+```
+
+**Key insight**: Samples are cloned from the audio playback thread, ensuring "what you see is what you hear".
 
 ### Next Steps
 
-1. **Waveform Integration**
-   - Replace static walls with actual audio waveform data
-   - Stream geometry generation as playback progresses
-   - Dynamic LOD based on camera distance
+1. **Real Audio File Integration** ⚠️ In Progress
+   - ✅ Mesh generation from sample data working (POC with sine waves)
+   - ⏸ Wire up to actual WAV file loading from `vvdaw-ui`
+   - ⏸ Clone samples from audio thread for visualization
+   - ⏸ File picker UI integration
 
-2. **Audio Sync**
+2. **Streaming & Performance**
+   - Stream geometry generation as playback progresses (only render visible sections)
+   - Dynamic LOD based on camera distance
+   - Mesh chunking for infinite highway effect
+   - GPU instancing for repeated geometry
+
+3. **Audio Sync**
    - Camera auto-advance with playback position
+   - Playback cursor visualization
    - Spatial audio positioning (what you hear depends on where you are)
 
-3. **Atmospheric Effects**
+4. **Atmospheric Effects**
    - Add fog (once we figure out Bevy 0.15 API)
    - Volumetric lighting
    - Particle effects for stereo field visualization
+   - Grid shader for road surface
 
-4. **Interaction**
+5. **Interaction**
    - Waveform editing in 3D space
    - Time scrubbing via position
    - Visual feedback for audio events
+   - Selection/manipulation tools
 
 ## Design Philosophy
 

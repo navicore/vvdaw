@@ -10,6 +10,7 @@ use bevy::prelude::*;
 pub mod camera;
 pub mod highway;
 pub mod scene;
+pub mod waveform;
 
 /// Plugin that sets up the 3D highway UI
 pub struct Highway3dPlugin;
@@ -17,6 +18,8 @@ pub struct Highway3dPlugin;
 impl Plugin for Highway3dPlugin {
     fn build(&self, app: &mut App) {
         app
+            // Initialize resources
+            .init_resource::<waveform::WaveformData>()
             // Add our custom plugins
             .add_plugins(scene::ScenePlugin)
             .add_plugins(camera::CameraPlugin)

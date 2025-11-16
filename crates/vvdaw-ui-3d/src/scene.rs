@@ -12,18 +12,18 @@ impl Plugin for ScenePlugin {
 
 /// Setup the basic 3D scene with lighting and atmosphere
 fn setup_scene(mut commands: Commands) {
-    // Ambient light - dark but not black (matching the concept images)
+    // Bright neutral ambient light for clear colors
     commands.insert_resource(AmbientLight {
-        color: Color::srgb(0.05, 0.08, 0.1), // Very dark blue-teal ambient
-        brightness: 100.0,
+        color: Color::WHITE,
+        brightness: 500.0,
     });
 
-    // Directional light (simulating moonlight or distant atmospheric glow)
+    // Bright white directional light
     commands.spawn((
         DirectionalLight {
-            color: Color::srgb(0.2, 0.4, 0.5), // Cyan-tinted light
-            illuminance: 5000.0,
-            shadows_enabled: true,
+            color: Color::WHITE,
+            illuminance: 10000.0,
+            shadows_enabled: false,
             ..default()
         },
         Transform::from_xyz(10.0, 50.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),

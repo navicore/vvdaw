@@ -40,13 +40,16 @@ impl Default for FlightCamera {
 
 /// Setup the camera at the starting position
 fn setup_camera(mut commands: Commands) {
+    // Position camera to view the waveforms
+    // - Behind and above the start of the highway
+    // - Looking forward down the highway (negative Z direction)
     commands.spawn((
         Camera3d::default(),
         Camera {
             clear_color: ClearColorConfig::Custom(Color::srgb(0.02, 0.05, 0.08)), // Very dark blue
             ..default()
         },
-        Transform::from_xyz(0.0, 5.0, 0.0).looking_at(Vec3::new(0.0, 5.0, -10.0), Vec3::Y),
+        Transform::from_xyz(0.0, 10.0, 20.0).looking_at(Vec3::new(0.0, 5.0, -50.0), Vec3::Y),
         FlightCamera::default(),
         // TODO: Add fog once we figure out the right Bevy 0.15 API
         // Fog is in the pbr module but not publicly exported in a simple way
