@@ -5,6 +5,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use std::collections::VecDeque;
 
 /// Resource holding loaded audio waveform data
 ///
@@ -20,7 +21,8 @@ pub struct WaveformData {
 
     /// Streaming waveform data: peak values from audio thread
     /// Each tuple is (`left_peak`, `right_peak`) for one audio buffer
-    pub streaming_peaks: Vec<(f32, f32)>,
+    /// Uses `VecDeque` for O(1) `pop_front` operations when maintaining ring buffer
+    pub streaming_peaks: VecDeque<(f32, f32)>,
     /// Current playback position (frame number) from audio thread
     pub current_position: u64,
     /// Maximum number of peak samples to store (ring buffer for scrolling display)
@@ -34,7 +36,7 @@ impl WaveformData {
         Self {
             samples,
             sample_rate,
-            streaming_peaks: Vec::new(),
+            streaming_peaks: VecDeque::new(),
             current_position: 0,
             max_streaming_samples: 9000, // ~100 seconds at 90 samples/sec
         }
@@ -47,11 +49,11 @@ impl WaveformData {
         self.current_position = position;
 
         // Add new peak sample
-        self.streaming_peaks.push((left_peak, right_peak));
+        self.streaming_peaks.push_back((left_peak, right_peak));
 
-        // Maintain ring buffer size
+        // Maintain ring buffer size (O(1) with VecDeque)
         if self.streaming_peaks.len() > self.max_streaming_samples {
-            self.streaming_peaks.remove(0);
+            self.streaming_peaks.pop_front();
         }
     }
 
@@ -141,14 +143,17 @@ pub fn generate_channel_mesh(
         );
     }
 
+    // Validate sample_stride to prevent division by zero
+    let sample_stride = config.sample_stride.max(1);
+
     // Calculate time per sample
     let time_per_sample = 1.0 / sample_rate as f32;
 
     // Generate vertices
     let mut vertex_index: u32 = 0;
 
-    for (i, sample) in samples.iter().step_by(config.sample_stride).enumerate() {
-        let time = (i * config.sample_stride) as f32 * time_per_sample;
+    for (i, sample) in samples.iter().step_by(sample_stride).enumerate() {
+        let time = (i * sample_stride) as f32 * time_per_sample;
         let z = -time * config.time_scale; // Negative so it extends backward along highway
 
         // Waveform oscillates around base_height (center line)
@@ -168,6 +173,11 @@ pub fn generate_channel_mesh(
         // Create indices for quad (if not the first vertex)
         if i > 0 {
             let base = vertex_index;
+
+            // Safety: vertex_index is always >= 4 here because:
+            // - First iteration (i=0) is skipped by the if check
+            // - Second iteration (i=1) has vertex_index = 4 (safe for base-4)
+            debug_assert!(base >= 4, "vertex_index must be >= 4 to safely subtract 4");
 
             // Front face (2 triangles)
             indices.push(base - 4);
