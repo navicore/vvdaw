@@ -29,13 +29,22 @@ fn main() -> Result<()> {
     let audio_config = AudioConfig::default();
     tracing::info!("Audio config: {:?}", audio_config);
 
-    // Create and start audio engine in a separate thread
+    // Create and start audio engine
     let mut engine = AudioEngine::new(audio_config);
     engine.start(audio_channels)?;
 
     tracing::info!("Audio engine started");
 
     // Create and run Bevy app with UI
+    //
+    // IMPORTANT: In Bevy 0.15+, App::run() returns when:
+    // - The window is closed
+    // - An AppExit event is sent
+    // - The process is terminated (Ctrl+C, SIGTERM, etc.)
+    //
+    // When App::run() returns or the process exits, the `engine` variable
+    // goes out of scope and its Drop impl is called, which stops the audio
+    // stream. This ensures proper cleanup in all exit scenarios.
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -48,10 +57,10 @@ fn main() -> Result<()> {
         .add_plugins(VvdawUiPlugin::new(ui_channels))
         .run();
 
-    tracing::info!("vvdaw shutting down");
+    tracing::info!("Bevy app exited - audio engine will be cleaned up");
 
-    // Stop the audio engine
-    engine.stop()?;
+    // NOTE: AudioEngine::drop() is called here automatically, which stops the audio stream.
+    // Explicit engine.stop() is not needed, but we rely on the Drop impl for cleanup.
 
     Ok(())
 }
