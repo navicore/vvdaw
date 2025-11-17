@@ -11,6 +11,7 @@ members = [
     "crates/vvdaw-ui-3d",
     "crates/vvdaw-app",
 ]
+default-members = ["crates/vvdaw-app"]
 
 [workspace.package]
 version = "0.1.0"

@@ -9,6 +9,7 @@ description.workspace = true
 keywords.workspace = true
 categories.workspace = true
 readme.workspace = true
+default-run = "vvdaw"
 
 [lints]
 workspace = true
@@ -32,6 +33,7 @@ vvdaw-plugin.workspace = true
 vvdaw-vst3.workspace = true
 vvdaw-comms.workspace = true
 vvdaw-ui.workspace = true
+vvdaw-ui-3d.workspace = true
 
 anyhow.workspace = true
 bevy.workspace = true
