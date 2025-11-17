@@ -11,6 +11,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 1  # Enable incremental compilation
+  CARGO_BUILD_JOBS: 4    # Use 4 parallel jobs (GitHub runners have 4 cores)
 
 jobs:
   # Fast format check (runs first, fails fast)
@@ -29,9 +31,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  # Linux CI using custom Docker image
-  linux-ci:
-    name: Linux CI
+  # Linux CI - Clippy (parallel)
+  linux-clippy:
+    name: Linux Clippy
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/navicore/vvdaw-docker:latest
@@ -44,8 +46,63 @@ jobs:
           mkdir -p vendor
           ln -s /opt/vst3sdk vendor/vst3sdk
 
-      - name: Run CI checks
-        run: just ci
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "linux-clippy"
+          cache-on-failure: true
+
+      - name: Run clippy
+        run: just lint
+
+  # Linux CI - Tests (parallel)
+  linux-test:
+    name: Linux Tests
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/navicore/vvdaw-docker:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Link VST3 SDK
+        run: |
+          mkdir -p vendor
+          ln -s /opt/vst3sdk vendor/vst3sdk
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "linux-test"
+          cache-on-failure: true
+
+      - name: Run tests
+        run: just test
+
+  # Linux CI - Release build (only on main/release)
+  linux-release:
+    name: Linux Release Build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'release'
+    container:
+      image: ghcr.io/navicore/vvdaw-docker:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Link VST3 SDK
+        run: |
+          mkdir -p vendor
+          ln -s /opt/vst3sdk vendor/vst3sdk
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "linux-release"
+          cache-on-failure: true
+
+      - name: Build release
+        run: just build-release
 
   # macOS CI (only on releases to save time)
   macos-ci:
