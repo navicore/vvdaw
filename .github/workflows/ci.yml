@@ -5,20 +5,51 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  release:
+    types: [published]
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  ci:
-    name: CI
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        rust: [stable]
+  # Fast format check (runs first, fails fast)
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # Linux CI using custom Docker image
+  linux-ci:
+    name: Linux CI
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/navicore/vvdaw-docker:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Link VST3 SDK
+        run: ln -s /opt/vst3sdk vendor/vst3sdk
+
+      - name: Run CI checks
+        run: just ci
+
+  # macOS CI (only on releases to save time)
+  macos-ci:
+    name: macOS CI
+    runs-on: macos-latest
+    if: github.event_name == 'release'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -28,55 +59,34 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "macos-stable"
+
+      - name: Cache VST3 SDK
+        id: cache-vst3
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          path: vendor/vst3sdk
+          key: vst3sdk-${{ runner.os }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-
-
-      # Linux-specific: Install audio and UI dependencies
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libudev-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libvulkan-dev
+            vst3sdk-${{ runner.os }}
 
       - name: Install just
         uses: extractions/setup-just@v2
 
       - name: Setup VST3 SDK
+        if: steps.cache-vst3.outputs.cache-hit != 'true'
         run: ./scripts/setup-vst3-sdk.sh
 
       - name: Run CI checks
         run: just ci
 
+  # Security audit (runs on all PRs and pushes)
   security:
-    name: Security audit
+    name: Security Audit
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -84,8 +94,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit
+          restore-keys: |
+            ${{ runner.os }}-cargo-audit
+
       - name: Install cargo-audit
-        run: cargo install cargo-audit
+        run: cargo install cargo-audit --locked || true
 
       - name: Install just
         uses: extractions/setup-just@v2
