@@ -115,27 +115,20 @@ fn update_waveform_meshes(
 ) {
     const TARGET_LENGTH: f32 = 400.0;
 
-    // Debug: Always log the flag state every frame
-    if waveform.needs_mesh_update {
-        tracing::info!("🚨 MESH UPDATE REQUESTED - needs_mesh_update flag is TRUE");
-        tracing::info!("🚨 Waveform has {} frames loaded", waveform.frame_count());
-    }
-
     // Only update if mesh update is requested
     if !waveform.needs_mesh_update {
         return;
     }
 
     if !waveform.is_loaded() {
-        tracing::warn!("Mesh update requested but no waveform data loaded");
-        waveform.needs_mesh_update = false; // Clear flag
+        waveform.needs_mesh_update = false;
         return;
     }
 
     let frame_count = waveform.frame_count();
     let duration_secs = frame_count as f32 / waveform.sample_rate as f32;
     tracing::info!(
-        "🎨 Waveform changed detected! Updating meshes from {} frames ({:.1}s duration)",
+        "Updating waveform meshes: {} frames ({:.1}s duration)",
         frame_count,
         duration_secs
     );
@@ -161,57 +154,28 @@ fn update_waveform_meshes(
         ..Default::default()
     };
 
-    tracing::info!(
-        "Mesh config: stride={}, time_scale={:.2}, estimated vertices={}, length={:.1} units",
-        sample_stride,
-        time_scale,
-        frame_count / sample_stride,
-        duration_secs * time_scale
-    );
-
     // Update left channel mesh
     if let Ok((entity, _mesh_handle)) = left_query.single() {
-        tracing::info!("Generating left channel mesh...");
         let left_samples = waveform.left_channel();
-        tracing::info!("Left channel has {} samples", left_samples.len());
-
         let mesh = generate_channel_mesh(&left_samples, waveform.sample_rate, &config);
-        tracing::info!(
-            "Generated left mesh with vertex count: {:?}",
-            mesh.count_vertices()
-        );
-
-        // Add new mesh to assets and update entity's component
         let new_handle = meshes.add(mesh);
         commands.entity(entity).insert(Mesh3d(new_handle));
-        tracing::info!("✓ Left channel mesh created and assigned to entity");
     } else {
-        tracing::warn!("❌ Left wall entity not found");
+        tracing::warn!("Left wall entity not found");
     }
 
     // Update right channel mesh
     if let Ok((entity, _mesh_handle)) = right_query.single() {
-        tracing::info!("Generating right channel mesh...");
         let right_samples = waveform.right_channel();
-        tracing::info!("Right channel has {} samples", right_samples.len());
-
         let mesh = generate_channel_mesh(&right_samples, waveform.sample_rate, &config);
-        tracing::info!(
-            "Generated right mesh with vertex count: {:?}",
-            mesh.count_vertices()
-        );
-
-        // Add new mesh to assets and update entity's component
         let new_handle = meshes.add(mesh);
         commands.entity(entity).insert(Mesh3d(new_handle));
-        tracing::info!("✓ Right channel mesh created and assigned to entity");
     } else {
-        tracing::warn!("❌ Right wall entity not found");
+        tracing::warn!("Right wall entity not found");
     }
 
     // Clear the update flag
     waveform.needs_mesh_update = false;
-    tracing::info!("✓ Mesh update complete - flag cleared");
 }
 
 /// Process audio events from the audio thread

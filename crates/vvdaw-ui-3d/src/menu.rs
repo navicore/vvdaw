@@ -144,12 +144,8 @@ fn file_dialog_poll_system(
     if let Some(task) = file_dialog.pending_task.take() {
         if task.is_finished() {
             if let Ok(Some(path)) = task.join() {
-                info!("📁 File dialog completed: {}", path.display());
-                info!("📤 Writing FileSelected message...");
+                info!("File selected: {}", path.display());
                 file_selected.write(FileSelected(path));
-                info!("📤 FileSelected message written");
-            } else {
-                info!("File dialog cancelled or error");
             }
         } else {
             // Put it back if not finished
