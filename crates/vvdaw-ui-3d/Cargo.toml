@@ -54,14 +54,21 @@ bevy = { workspace = true, features = [
 ] }
 
 # Audio integration
-vvdaw-audio = { path = "../vvdaw-audio" }
-vvdaw-comms = { path = "../vvdaw-comms" }
-vvdaw-core = { path = "../vvdaw-core" }
-vvdaw-plugin = { path = "../vvdaw-plugin" }
+vvdaw-audio.workspace = true
+vvdaw-comms.workspace = true
+vvdaw-core.workspace = true
+vvdaw-plugin.workspace = true
+
+# UI
+bevy_egui.workspace = true
+
+# File I/O
+hound.workspace = true
+rfd.workspace = true
 
 # Logging
-tracing = "0.1"
+tracing.workspace = true
 
 [dev-dependencies]
-anyhow = "1.0"
-hound = "3.5"  # WAV file I/O for examples
+anyhow.workspace = true
+hound.workspace = true
