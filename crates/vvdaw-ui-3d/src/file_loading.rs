@@ -17,6 +17,7 @@ pub struct FileLoadingPlugin;
 impl Plugin for FileLoadingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FileLoadTask>()
+            .init_resource::<FileLoadingState>()
             .add_message::<FileSelected>()
             .add_systems(
                 Update,
@@ -31,7 +32,36 @@ struct FileLoadTask {
     pending: Option<std::thread::JoinHandle<Result<LoadedAudio, String>>>,
 }
 
+/// Resource for tracking file loading state and errors
+#[derive(Resource, Default, Clone)]
+pub struct FileLoadingState {
+    pub is_loading: bool,
+    pub error: Option<String>,
+}
+
+impl FileLoadingState {
+    pub fn start_loading(&mut self) {
+        self.is_loading = true;
+        self.error = None;
+    }
+
+    pub fn complete_successfully(&mut self) {
+        self.is_loading = false;
+        self.error = None;
+    }
+
+    pub fn fail_with_error(&mut self, error: String) {
+        self.is_loading = false;
+        self.error = Some(error);
+    }
+
+    pub fn clear_error(&mut self) {
+        self.error = None;
+    }
+}
+
 /// Loaded audio data
+#[derive(Debug)]
 struct LoadedAudio {
     samples: Vec<f32>, // Interleaved stereo
     sample_rate: u32,
@@ -42,10 +72,20 @@ struct LoadedAudio {
 fn start_file_load_system(
     mut file_events: MessageReader<FileSelected>,
     mut load_task: ResMut<FileLoadTask>,
+    mut loading_state: ResMut<FileLoadingState>,
 ) {
     for event in file_events.read() {
+        // Check if a load is already in progress
+        if load_task.pending.is_some() {
+            info!("File load already in progress, ignoring new request");
+            continue;
+        }
+
         let path = event.0.clone();
         info!("Loading WAV file: {}", path.display());
+
+        // Update loading state
+        loading_state.start_loading();
 
         // Spawn background thread to load file
         let task = std::thread::spawn(move || load_wav_file(&path));
@@ -58,6 +98,7 @@ fn poll_file_load_system(
     mut load_task: ResMut<FileLoadTask>,
     mut waveform_data: ResMut<WaveformData>,
     mut playback_state: ResMut<PlaybackState>,
+    mut loading_state: ResMut<FileLoadingState>,
 ) {
     if let Some(task) = load_task.pending.take() {
         if task.is_finished() {
@@ -89,13 +130,19 @@ fn poll_file_load_system(
                         waveform_data.frame_count() as f32 / audio.sample_rate as f32;
                     playback_state.current_position = 0.0;
 
+                    // Update loading state
+                    loading_state.complete_successfully();
+
                     info!("File loaded successfully");
                 }
                 Ok(Err(e)) => {
                     error!("Failed to load WAV file: {e}");
+                    loading_state.fail_with_error(e);
                 }
                 Err(_) => {
-                    error!("File loading thread panicked");
+                    let error_msg = "File loading thread panicked".to_string();
+                    error!("{error_msg}");
+                    loading_state.fail_with_error(error_msg);
                 }
             }
         } else {
@@ -218,4 +265,99 @@ fn load_wav_file(path: &Path) -> Result<LoadedAudio, String> {
         sample_rate,
         path: canonical_path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_load_wav_nonexistent_file() {
+        let result = load_wav_file(Path::new("/nonexistent/file.wav"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("File not found"));
+    }
+
+    #[test]
+    fn test_load_wav_invalid_extension() {
+        // Create a temporary file with wrong extension
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join("test_invalid.txt");
+        fs::write(&test_file, b"not a wav file").unwrap();
+
+        let result = load_wav_file(&test_file);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid file extension"));
+
+        // Cleanup
+        let _ = fs::remove_file(test_file);
+    }
+
+    #[test]
+    fn test_load_wav_directory_not_file() {
+        let temp_dir = std::env::temp_dir();
+        let result = load_wav_file(&temp_dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Path is not a file"));
+    }
+
+    #[test]
+    fn test_load_wav_path_traversal_prevention() {
+        // Attempting to load a file with path traversal should fail safely
+        // The canonicalize step will resolve ../ and prevent traversal
+        let result = load_wav_file(Path::new("../../etc/passwd"));
+        // Should fail because file doesn't exist or isn't a .wav
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_wav_missing_extension() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join("test_no_extension");
+        fs::write(&test_file, b"data").unwrap();
+
+        let result = load_wav_file(&test_file);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("File must have .wav extension")
+        );
+
+        // Cleanup
+        let _ = fs::remove_file(test_file);
+    }
+
+    #[test]
+    fn test_file_loading_state_lifecycle() {
+        let mut state = FileLoadingState::default();
+
+        // Initial state
+        assert!(!state.is_loading);
+        assert!(state.error.is_none());
+
+        // Start loading
+        state.start_loading();
+        assert!(state.is_loading);
+        assert!(state.error.is_none());
+
+        // Complete successfully
+        state.complete_successfully();
+        assert!(!state.is_loading);
+        assert!(state.error.is_none());
+
+        // Start loading again
+        state.start_loading();
+        assert!(state.is_loading);
+
+        // Fail with error
+        state.fail_with_error("Test error".to_string());
+        assert!(!state.is_loading);
+        assert_eq!(state.error, Some("Test error".to_string()));
+
+        // Clear error
+        state.clear_error();
+        assert!(state.error.is_none());
+    }
 }

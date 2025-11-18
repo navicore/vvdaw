@@ -45,14 +45,17 @@ fn menu_bar_system(
         ui.horizontal(|ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("Load WAV...").clicked() {
-                    // Spawn file dialog in background thread
-                    let task = std::thread::spawn(|| {
-                        FileDialog::new()
-                            .add_filter("WAV Audio", &["wav"])
-                            .set_title("Load WAV File")
-                            .pick_file()
-                    });
-                    file_dialog.pending_task = Some(task);
+                    // Only spawn dialog if one isn't already open
+                    if file_dialog.pending_task.is_none() {
+                        // Spawn file dialog in background thread
+                        let task = std::thread::spawn(|| {
+                            FileDialog::new()
+                                .add_filter("WAV Audio", &["wav"])
+                                .set_title("Load WAV File")
+                                .pick_file()
+                        });
+                        file_dialog.pending_task = Some(task);
+                    }
                     ui.close();
                 }
 
@@ -69,7 +72,7 @@ fn menu_bar_system(
                     ui.close();
                 }
 
-                if ui.button("Stop  [S]").clicked() {
+                if ui.button("Stop  [X]").clicked() {
                     playback_commands.write(PlaybackCommand::Stop);
                     ui.close();
                 }
@@ -95,7 +98,11 @@ fn menu_bar_system(
 
 /// HUD overlay system
 #[allow(clippy::needless_pass_by_value)]
-fn hud_overlay_system(mut contexts: EguiContexts, playback_state: Res<PlaybackState>) -> Result {
+fn hud_overlay_system(
+    mut contexts: EguiContexts,
+    playback_state: Res<PlaybackState>,
+    mut loading_state: ResMut<crate::file_loading::FileLoadingState>,
+) -> Result {
     egui::Window::new("Status")
         .title_bar(false)
         .resizable(false)
@@ -103,6 +110,21 @@ fn hud_overlay_system(mut contexts: EguiContexts, playback_state: Res<PlaybackSt
         .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
         .show(contexts.ctx_mut()?, |ui| {
             ui.vertical(|ui| {
+                // Loading status
+                if loading_state.is_loading {
+                    ui.colored_label(egui::Color32::YELLOW, "⏳ Loading...");
+                }
+
+                // Error display with dismiss button
+                if let Some(error) = loading_state.error.clone() {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(egui::Color32::RED, format!("❌ Error: {error}"));
+                        if ui.small_button("✖").clicked() {
+                            loading_state.clear_error();
+                        }
+                    });
+                }
+
                 // Playback status
                 let status_text = match playback_state.status {
                     crate::playback::PlaybackStatus::Stopped => "⏹ Stopped",

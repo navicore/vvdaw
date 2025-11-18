@@ -119,6 +119,7 @@ fn run_3d_ui(args: &Args) {
     println!("  Shift       - Speed boost");
     println!("  Right Mouse - Look around");
     println!("  Space       - Play/Pause");
+    println!("  X           - Stop");
     println!("  Tab         - Toggle camera mode");
     println!("  Ctrl+O      - Load WAV file");
     println!("  Esc         - Exit");

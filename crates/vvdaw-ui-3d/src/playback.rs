@@ -67,8 +67,8 @@ fn keyboard_input_system(
         commands.write(PlaybackCommand::Toggle);
     }
 
-    // S: Stop
-    if keyboard.just_pressed(KeyCode::KeyS) {
+    // X: Stop (changed from S to avoid conflict with camera backward movement)
+    if keyboard.just_pressed(KeyCode::KeyX) {
         commands.write(PlaybackCommand::Stop);
     }
 }
