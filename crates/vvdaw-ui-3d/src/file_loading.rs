@@ -33,7 +33,7 @@ struct FileLoadTask {
 
 /// Loaded audio data
 struct LoadedAudio {
-    samples: Vec<f32>,  // Interleaved stereo
+    samples: Vec<f32>, // Interleaved stereo
     sample_rate: u32,
     path: PathBuf,
 }
@@ -106,6 +106,9 @@ fn poll_file_load_system(
 fn load_wav_file(path: &Path) -> Result<LoadedAudio, String> {
     use std::fs;
 
+    // Validate file size (500MB limit)
+    const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024;
+
     // Validate and sanitize path using canonicalization
     let path_obj = Path::new(path);
 
@@ -120,10 +123,7 @@ fn load_wav_file(path: &Path) -> Result<LoadedAudio, String> {
 
     // Validate it's a file, not a directory
     if !canonical_path.is_file() {
-        return Err(format!(
-            "Path is not a file: {}",
-            canonical_path.display()
-        ));
+        return Err(format!("Path is not a file: {}", canonical_path.display()));
     }
 
     // Validate file extension on the canonical path
@@ -137,9 +137,6 @@ fn load_wav_file(path: &Path) -> Result<LoadedAudio, String> {
     } else {
         return Err("File must have .wav extension".to_string());
     }
-
-    // Validate file size (500MB limit)
-    const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024;
     let metadata =
         fs::metadata(&canonical_path).map_err(|e| format!("Failed to read file metadata: {e}"))?;
 

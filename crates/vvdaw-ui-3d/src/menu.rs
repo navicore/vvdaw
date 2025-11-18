@@ -3,10 +3,12 @@
 //! Provides File menu for loading WAV files and controlling playback.
 
 use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use rfd::FileDialog;
 use std::path::PathBuf;
 use tracing::info;
+
+use crate::playback::{PlaybackCommand, PlaybackState};
 
 /// Plugin that adds menu bar to the 3D UI
 pub struct MenuPlugin;
@@ -16,6 +18,7 @@ impl Plugin for MenuPlugin {
         app.add_plugins(EguiPlugin::default())
             .init_resource::<FileDialogState>()
             .add_systems(EguiPrimaryContextPass, menu_bar_system)
+            .add_systems(EguiPrimaryContextPass, hud_overlay_system)
             .add_systems(Update, file_dialog_poll_system);
     }
 }
@@ -36,6 +39,7 @@ fn menu_bar_system(
     mut contexts: EguiContexts,
     mut file_dialog: ResMut<FileDialogState>,
     mut app_exit: MessageWriter<AppExit>,
+    mut playback_commands: MessageWriter<PlaybackCommand>,
 ) -> Result {
     egui::TopBottomPanel::top("menu_bar").show(contexts.ctx_mut()?, |ui| {
         ui.horizontal(|ui| {
@@ -61,12 +65,12 @@ fn menu_bar_system(
 
             ui.menu_button("Playback", |ui| {
                 if ui.button("Play/Pause  [Space]").clicked() {
-                    // TODO: Send play/pause command
+                    playback_commands.write(PlaybackCommand::Toggle);
                     ui.close();
                 }
 
                 if ui.button("Stop  [S]").clicked() {
-                    // TODO: Send stop command
+                    playback_commands.write(PlaybackCommand::Stop);
                     ui.close();
                 }
             });
@@ -85,6 +89,49 @@ fn menu_bar_system(
             }
         });
     });
+
+    Ok(())
+}
+
+/// HUD overlay system
+#[allow(clippy::needless_pass_by_value)]
+fn hud_overlay_system(mut contexts: EguiContexts, playback_state: Res<PlaybackState>) -> Result {
+    egui::Window::new("Status")
+        .title_bar(false)
+        .resizable(false)
+        .movable(false)
+        .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
+        .show(contexts.ctx_mut()?, |ui| {
+            ui.vertical(|ui| {
+                // Playback status
+                let status_text = match playback_state.status {
+                    crate::playback::PlaybackStatus::Stopped => "⏹ Stopped",
+                    crate::playback::PlaybackStatus::Playing => "▶ Playing",
+                    crate::playback::PlaybackStatus::Paused => "⏸ Paused",
+                };
+                ui.label(status_text);
+
+                // Time display
+                let current_min = (playback_state.current_position / 60.0) as u32;
+                let current_sec = (playback_state.current_position % 60.0) as u32;
+                let total_min = (playback_state.total_duration / 60.0) as u32;
+                let total_sec = (playback_state.total_duration % 60.0) as u32;
+
+                ui.label(format!(
+                    "Time: {current_min:02}:{current_sec:02} / {total_min:02}:{total_sec:02}"
+                ));
+
+                // Loaded file
+                if let Some(filename) = &playback_state.loaded_file {
+                    ui.label(format!("File: {filename}"));
+                } else {
+                    ui.label("File: None");
+                }
+
+                // Sample rate
+                ui.label(format!("Sample Rate: {}Hz", playback_state.sample_rate));
+            });
+        });
 
     Ok(())
 }

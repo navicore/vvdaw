@@ -50,7 +50,7 @@ fn main() -> Result<()> {
 
     match args.ui {
         UiMode::TwoD => run_2d_ui(&args)?,
-        UiMode::ThreeD => run_3d_ui(&args)?,
+        UiMode::ThreeD => run_3d_ui(&args),
     }
 
     Ok(())
@@ -106,7 +106,7 @@ fn run_2d_ui(args: &Args) -> Result<()> {
 }
 
 /// Run the application with 3D highway UI
-fn run_3d_ui(args: &Args) -> Result<()> {
+fn run_3d_ui(args: &Args) {
     if args.wav_file.is_some() {
         tracing::warn!("WAV file argument ignored in 3D mode - use File > Load WAV menu instead");
     }
@@ -131,6 +131,4 @@ fn run_3d_ui(args: &Args) -> Result<()> {
     vvdaw_ui_3d::create_app().run();
 
     tracing::info!("Bevy app exited");
-
-    Ok(())
 }

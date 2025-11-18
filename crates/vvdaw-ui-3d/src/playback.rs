@@ -10,6 +10,7 @@ impl Plugin for PlaybackPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlaybackState>()
             .add_message::<PlaybackCommand>()
+            .add_systems(Update, keyboard_input_system)
             .add_systems(Update, handle_playback_commands);
     }
 }
@@ -18,8 +19,8 @@ impl Plugin for PlaybackPlugin {
 #[derive(Resource, Debug)]
 pub struct PlaybackState {
     pub status: PlaybackStatus,
-    pub current_position: f32,  // In seconds
-    pub total_duration: f32,    // Total track length
+    pub current_position: f32, // In seconds
+    pub total_duration: f32,   // Total track length
     pub sample_rate: u32,
     pub loaded_file: Option<String>,
 }
@@ -49,11 +50,28 @@ pub enum PlaybackCommand {
     Play,
     Pause,
     Stop,
-    Toggle,  // Play if stopped/paused, pause if playing
-    Seek(f32),  // Jump to position in seconds
+    Toggle,    // Play if stopped/paused, pause if playing
+    Seek(f32), // Jump to position in seconds
 }
 
 impl Message for PlaybackCommand {}
+
+/// System to handle keyboard input for playback controls
+#[allow(clippy::needless_pass_by_value)]
+fn keyboard_input_system(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut commands: MessageWriter<PlaybackCommand>,
+) {
+    // Space: Toggle play/pause
+    if keyboard.just_pressed(KeyCode::Space) {
+        commands.write(PlaybackCommand::Toggle);
+    }
+
+    // S: Stop
+    if keyboard.just_pressed(KeyCode::KeyS) {
+        commands.write(PlaybackCommand::Stop);
+    }
+}
 
 /// System to handle playback commands
 fn handle_playback_commands(
