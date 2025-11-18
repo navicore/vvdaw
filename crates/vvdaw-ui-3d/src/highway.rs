@@ -29,12 +29,9 @@ pub struct HighwayPlugin;
 
 impl Plugin for HighwayPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Startup,
-            (setup_highway, generate_test_waveform_if_empty).chain(),
-        )
-        .add_systems(Update, process_audio_events)
-        .add_systems(Update, update_waveform_meshes);
+        app.add_systems(Startup, setup_highway)
+            .add_systems(Update, process_audio_events)
+            .add_systems(Update, update_waveform_meshes);
     }
 }
 
@@ -107,67 +104,31 @@ fn setup_highway(
     ));
 }
 
-/// Generate test waveform data (sine waves for POC) if no data is already loaded
-fn generate_test_waveform_if_empty(mut waveform: ResMut<WaveformData>) {
-    const SAMPLE_RATE: u32 = 48000;
-    const DURATION_SECS: f32 = 2.0;
-    const FREQUENCY_LEFT: f32 = 220.0; // A3
-    const FREQUENCY_RIGHT: f32 = 330.0; // E4
-
-    // Only generate test data if waveform is empty
-    if waveform.is_loaded() {
-        tracing::info!(
-            "Using pre-loaded waveform data: {} frames at {}Hz",
-            waveform.frame_count(),
-            waveform.sample_rate
-        );
-        return;
-    }
-
-    let num_samples = (SAMPLE_RATE as f32 * DURATION_SECS) as usize;
-    let mut samples = Vec::with_capacity(num_samples * 2);
-
-    for i in 0..num_samples {
-        let t = i as f32 / SAMPLE_RATE as f32;
-
-        // Left channel - lower frequency sine wave
-        let left = (2.0 * std::f32::consts::PI * FREQUENCY_LEFT * t).sin() * 0.5;
-
-        // Right channel - higher frequency sine wave
-        let right = (2.0 * std::f32::consts::PI * FREQUENCY_RIGHT * t).sin() * 0.5;
-
-        samples.push(left);
-        samples.push(right);
-    }
-
-    *waveform = WaveformData::new(samples, SAMPLE_RATE);
-
-    tracing::info!(
-        "Generated test waveform: {} frames at {}Hz",
-        waveform.frame_count(),
-        SAMPLE_RATE
-    );
-}
-
 /// Update waveform wall meshes when waveform data changes
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters must be passed by value
 fn update_waveform_meshes(
-    waveform: Res<WaveformData>,
+    mut waveform: ResMut<WaveformData>,
     mut meshes: ResMut<Assets<Mesh>>,
-    left_query: Query<&Mesh3d, With<LeftWall>>,
-    right_query: Query<&Mesh3d, With<RightWall>>,
+    mut commands: Commands,
+    left_query: Query<(Entity, &Mesh3d), With<LeftWall>>,
+    right_query: Query<(Entity, &Mesh3d), With<RightWall>>,
 ) {
     const TARGET_LENGTH: f32 = 400.0;
 
-    // Only update if waveform data has changed
-    if !waveform.is_changed() || !waveform.is_loaded() {
+    // Only update if mesh update is requested
+    if !waveform.needs_mesh_update {
+        return;
+    }
+
+    if !waveform.is_loaded() {
+        waveform.needs_mesh_update = false;
         return;
     }
 
     let frame_count = waveform.frame_count();
     let duration_secs = frame_count as f32 / waveform.sample_rate as f32;
     tracing::info!(
-        "Updating waveform meshes from {} frames ({:.1}s duration)",
+        "Updating waveform meshes: {} frames ({:.1}s duration)",
         frame_count,
         duration_secs
     );
@@ -193,45 +154,28 @@ fn update_waveform_meshes(
         ..Default::default()
     };
 
-    tracing::info!(
-        "Mesh config: stride={}, time_scale={:.2}, estimated vertices={}, length={:.1} units",
-        sample_stride,
-        time_scale,
-        frame_count / sample_stride,
-        duration_secs * time_scale
-    );
-
     // Update left channel mesh
-    if let Ok(mesh_handle) = left_query.single() {
-        tracing::info!("Generating left channel mesh...");
+    if let Ok((entity, _mesh_handle)) = left_query.single() {
         let left_samples = waveform.left_channel();
         let mesh = generate_channel_mesh(&left_samples, waveform.sample_rate, &config);
-
-        if let Some(mesh_asset) = meshes.get_mut(&mesh_handle.0) {
-            *mesh_asset = mesh;
-            tracing::info!("✓ Left channel mesh updated");
-        } else {
-            tracing::warn!("Failed to get left mesh asset");
-        }
+        let new_handle = meshes.add(mesh);
+        commands.entity(entity).insert(Mesh3d(new_handle));
     } else {
         tracing::warn!("Left wall entity not found");
     }
 
     // Update right channel mesh
-    if let Ok(mesh_handle) = right_query.single() {
-        tracing::info!("Generating right channel mesh...");
+    if let Ok((entity, _mesh_handle)) = right_query.single() {
         let right_samples = waveform.right_channel();
         let mesh = generate_channel_mesh(&right_samples, waveform.sample_rate, &config);
-
-        if let Some(mesh_asset) = meshes.get_mut(&mesh_handle.0) {
-            *mesh_asset = mesh;
-            tracing::info!("✓ Right channel mesh updated");
-        } else {
-            tracing::warn!("Failed to get right mesh asset");
-        }
+        let new_handle = meshes.add(mesh);
+        commands.entity(entity).insert(Mesh3d(new_handle));
     } else {
         tracing::warn!("Right wall entity not found");
     }
+
+    // Clear the update flag
+    waveform.needs_mesh_update = false;
 }
 
 /// Process audio events from the audio thread

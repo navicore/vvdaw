@@ -36,7 +36,8 @@ vvdaw-ui = { path = "crates/vvdaw-ui" }
 vvdaw-ui-3d = { path = "crates/vvdaw-ui-3d" }
 
 # External dependencies - versions centralized here
-bevy = { version = "0.17.2", default-features = false }
+bevy = { version = "0.17", default-features = false }
+bevy_egui = "0.38"
 cpal = "0.15"
 anyhow = "1.0"
 thiserror = "2.0"

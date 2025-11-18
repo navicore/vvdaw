@@ -28,6 +28,9 @@ pub struct WaveformData {
     /// Maximum number of peak samples to store (ring buffer for scrolling display)
     /// At ~90 samples/sec, 9000 samples = ~100 seconds of history
     pub max_streaming_samples: usize,
+
+    /// Flag to force mesh regeneration (set when new file is loaded)
+    pub needs_mesh_update: bool,
 }
 
 impl WaveformData {
@@ -39,6 +42,7 @@ impl WaveformData {
             streaming_peaks: VecDeque::new(),
             current_position: 0,
             max_streaming_samples: 9000, // ~100 seconds at 90 samples/sec
+            needs_mesh_update: true,     // Always request mesh update for new data
         }
     }
 

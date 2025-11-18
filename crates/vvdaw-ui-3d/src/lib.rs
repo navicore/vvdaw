@@ -8,7 +8,10 @@
 use bevy::prelude::*;
 
 pub mod camera;
+pub mod file_loading;
 pub mod highway;
+pub mod menu;
+pub mod playback;
 pub mod scene;
 pub mod waveform;
 
@@ -23,7 +26,10 @@ impl Plugin for Highway3dPlugin {
             // Add our custom plugins
             .add_plugins(scene::ScenePlugin)
             .add_plugins(camera::CameraPlugin)
-            .add_plugins(highway::HighwayPlugin);
+            .add_plugins(highway::HighwayPlugin)
+            .add_plugins(menu::MenuPlugin)
+            .add_plugins(playback::PlaybackPlugin)
+            .add_plugins(file_loading::FileLoadingPlugin);
     }
 }
 
