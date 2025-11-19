@@ -50,15 +50,15 @@ impl AudioEngine {
         );
 
         // Use the device's sample rate if it differs from our request
-        let actual_sample_rate = if device_sample_rate != self.config.sample_rate {
+        let actual_sample_rate = if device_sample_rate == self.config.sample_rate {
+            self.config.sample_rate
+        } else {
             tracing::warn!(
                 "Using device sample rate {}Hz instead of requested {}Hz to avoid resampling issues",
                 device_sample_rate,
                 self.config.sample_rate
             );
             device_sample_rate
-        } else {
-            self.config.sample_rate
         };
 
         // Configure the output stream with the actual sample rate
@@ -69,6 +69,12 @@ impl AudioEngine {
         };
 
         tracing::info!("Final stream config: {:?}", config);
+
+        // Send EngineInitialized event to UI with actual sample rate
+        // This must happen BEFORE channels is moved into the audio callback closure
+        let _ = channels.event_tx.push(AudioEvent::EngineInitialized {
+            sample_rate: actual_sample_rate,
+        });
 
         // Create the audio graph with proper configuration
         let mut graph = AudioGraph::with_config(config.sample_rate.0, self.config.block_size);

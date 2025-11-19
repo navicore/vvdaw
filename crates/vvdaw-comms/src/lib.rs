@@ -48,6 +48,17 @@ pub enum AudioEvent {
     Started,
     /// Audio processing stopped
     Stopped,
+    /// Audio engine initialized with actual device sample rate
+    ///
+    /// Sent once when the audio engine successfully starts and configures
+    /// the audio device. Reports the actual sample rate the engine is using,
+    /// which may differ from the requested rate if the device doesn't support it.
+    ///
+    /// UI should use this rate for resampling imported audio files.
+    EngineInitialized {
+        /// Actual sample rate the audio engine is running at (e.g., 44100, 48000)
+        sample_rate: u32,
+    },
     /// Error occurred
     Error(String),
     /// Peak level update (for meters, visualization)

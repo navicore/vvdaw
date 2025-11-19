@@ -52,6 +52,31 @@ pub struct AudioPluginChannel(pub crossbeam_channel::Sender<vvdaw_comms::PluginI
 // crossbeam_channel::Sender already implements Send + Sync, so no manual impl needed
 impl Resource for AudioPluginChannel {}
 
+/// Resource containing information about the audio engine
+///
+/// This stores the actual sample rate the audio engine is running at,
+/// which is reported via the `AudioEvent::EngineInitialized` event.
+///
+/// UI systems can use this to know what sample rate to resample imported
+/// audio files to, ensuring they match the engine's actual rate.
+#[derive(Resource, Debug, Clone)]
+pub struct AudioEngineInfo {
+    /// The actual sample rate the audio engine is running at
+    ///
+    /// This is initialized to a default value and updated when the
+    /// `EngineInitialized` event is received.
+    pub sample_rate: u32,
+}
+
+impl Default for AudioEngineInfo {
+    fn default() -> Self {
+        Self {
+            // Default to 48kHz - will be updated when engine initializes
+            sample_rate: 48000,
+        }
+    }
+}
+
 /// Plugin that sets up the 3D highway UI
 pub struct Highway3dPlugin;
 
@@ -59,6 +84,7 @@ impl Plugin for Highway3dPlugin {
     fn build(&self, app: &mut App) {
         app
             // Initialize resources
+            .init_resource::<AudioEngineInfo>()
             .init_resource::<waveform::WaveformData>()
             // Add our custom plugins
             .add_plugins(scene::ScenePlugin)
@@ -72,11 +98,11 @@ impl Plugin for Highway3dPlugin {
     }
 }
 
-/// System to handle graceful shutdown when AppExit is triggered
+/// System to handle graceful shutdown when `AppExit` is triggered
 ///
 /// AGGRESSIVE EXIT STRATEGY:
 /// Due to potential deadlocks with audio threads and egui when paused,
-/// we use std::process::exit() to force immediate termination.
+/// we use `std::process::exit()` to force immediate termination.
 ///
 /// This is not ideal but prevents the app from hanging indefinitely.
 /// The audio thread and all resources will be cleaned up by the OS.

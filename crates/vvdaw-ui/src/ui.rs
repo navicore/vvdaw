@@ -516,6 +516,10 @@ pub fn poll_audio_events(
                 audio_state.playback = PlaybackState::Stopped;
                 audio_state.status_message = "Status: Stopped".to_string();
             }
+            AudioEvent::EngineInitialized { sample_rate } => {
+                tracing::info!("✓ Audio engine initialized at {}Hz", sample_rate);
+                // 2D UI doesn't need to track sample rate currently, but we log it
+            }
             AudioEvent::Error(msg) => {
                 tracing::error!("Audio error: {msg}");
                 audio_state.status_message = format!("Error: {msg}");

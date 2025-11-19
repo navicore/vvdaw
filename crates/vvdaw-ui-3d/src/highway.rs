@@ -202,6 +202,7 @@ fn process_audio_events(
     event_channel: Option<ResMut<AudioEventChannel>>,
     mut waveform: ResMut<WaveformData>,
     mut current_sampler: ResMut<crate::file_loading::CurrentSamplerNode>,
+    mut engine_info: ResMut<crate::AudioEngineInfo>,
 ) {
     // Early return if audio event channel is not available (e.g., in basic examples)
     let Some(mut channel) = event_channel else {
@@ -224,6 +225,10 @@ fn process_audio_events(
             }
             AudioEvent::Stopped => {
                 tracing::info!("Audio playback stopped");
+            }
+            AudioEvent::EngineInitialized { sample_rate } => {
+                tracing::info!("✓ Audio engine initialized at {}Hz", sample_rate);
+                engine_info.sample_rate = sample_rate;
             }
             AudioEvent::NodeAdded { node_id } => {
                 tracing::info!("✓ Sampler node added with ID: {node_id}");
