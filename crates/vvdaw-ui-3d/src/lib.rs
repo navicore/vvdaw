@@ -19,11 +19,26 @@ pub mod waveform;
 /// Resource wrapping the command sender (UI -> Audio)
 pub struct AudioCommandChannel(pub vvdaw_comms::CommandSender);
 
-// SAFETY: This is safe because:
-// 1. CommandSender (rtrb::Producer) is specifically designed for lock-free single-producer use
-// 2. Bevy guarantees single-threaded access to Resources (no concurrent access)
-// 3. The UI thread (producer) and audio thread (consumer) never access the same end
-// 4. rtrb uses atomic operations internally for thread-safe communication
+// SAFETY: Manual Send + Sync implementation required for rtrb::Producer
+//
+// WHY THIS IS NEEDED:
+// `rtrb::Producer<T>` does not automatically implement `Sync` because it contains:
+// - `std::cell::Cell<usize>` (interior mutability without synchronization)
+// - `*mut T` raw pointers (not Send/Sync by default)
+//
+// These are implementation details of rtrb's lock-free algorithm, NOT a signal
+// that the type is unsafe to use across threads.
+//
+// WHY THIS IS SAFE:
+// 1. `rtrb::Producer` is explicitly designed for cross-thread communication
+//    (single producer on one thread, single consumer on another thread)
+// 2. Bevy's `Resource` system guarantees exclusive access - only one system
+//    can access a resource at a time, preventing concurrent `&` or `&mut` access
+// 3. The producer and consumer ends are completely separate - the audio thread
+//    never touches the Producer, only the Consumer
+// 4. rtrb uses atomic operations internally for thread-safe coordination
+//
+// This pattern is documented in Bevy community resources for wrapping SPSC channels.
 #[allow(unsafe_code)]
 unsafe impl Send for AudioCommandChannel {}
 #[allow(unsafe_code)]
@@ -34,15 +49,7 @@ impl Resource for AudioCommandChannel {}
 /// Resource wrapping the plugin sender (UI -> Audio)
 pub struct AudioPluginChannel(pub crossbeam_channel::Sender<vvdaw_comms::PluginInstance>);
 
-// SAFETY: This is safe because:
-// 1. crossbeam_channel::Sender is explicitly Send + Sync by design
-// 2. Bevy Resources are accessed by only one system at a time
-// 3. The Sender is designed for multi-producer scenarios (even safer for single-producer)
-#[allow(unsafe_code)]
-unsafe impl Send for AudioPluginChannel {}
-#[allow(unsafe_code)]
-unsafe impl Sync for AudioPluginChannel {}
-
+// crossbeam_channel::Sender already implements Send + Sync, so no manual impl needed
 impl Resource for AudioPluginChannel {}
 
 /// Plugin that sets up the 3D highway UI

@@ -13,11 +13,26 @@ use vvdaw_comms::{AudioEvent, EventReceiver};
 /// Resource wrapping the audio event receiver channel
 pub struct AudioEventChannel(pub EventReceiver);
 
-// SAFETY: This is safe because:
-// 1. EventReceiver (rtrb::Consumer) is specifically designed for lock-free single-consumer use
-// 2. Bevy guarantees single-threaded access to Resources (no concurrent access)
-// 3. The audio thread (producer) and UI thread (consumer) never access the same end
-// 4. rtrb uses atomic operations internally for thread-safe communication
+// SAFETY: Manual Send + Sync implementation required for rtrb::Consumer
+//
+// WHY THIS IS NEEDED:
+// `rtrb::Consumer<T>` does not automatically implement `Sync` because it contains:
+// - `std::cell::Cell<usize>` (interior mutability without synchronization)
+// - `*mut T` raw pointers (not Send/Sync by default)
+//
+// These are implementation details of rtrb's lock-free algorithm, NOT a signal
+// that the type is unsafe to use across threads.
+//
+// WHY THIS IS SAFE:
+// 1. `rtrb::Consumer` is explicitly designed for cross-thread communication
+//    (single producer on one thread, single consumer on another thread)
+// 2. Bevy's `Resource` system guarantees exclusive access - only one system
+//    can access a resource at a time, preventing concurrent `&` or `&mut` access
+// 3. The producer and consumer ends are completely separate - the UI thread
+//    never touches the Producer, only the Consumer
+// 4. rtrb uses atomic operations internally for thread-safe coordination
+//
+// This pattern is documented in Bevy community resources for wrapping SPSC channels.
 #[allow(unsafe_code)]
 unsafe impl Send for AudioEventChannel {}
 #[allow(unsafe_code)]
