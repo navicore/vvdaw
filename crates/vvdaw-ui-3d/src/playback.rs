@@ -106,42 +106,74 @@ fn keyboard_input_system(
 fn handle_playback_commands(
     mut commands: MessageReader<PlaybackCommand>,
     mut state: ResMut<PlaybackState>,
+    mut audio_command_tx: Option<ResMut<crate::AudioCommandChannel>>,
 ) {
     for command in commands.read() {
         match command {
             PlaybackCommand::Play => {
                 info!("Play command");
                 state.status = PlaybackStatus::Playing;
-                // TODO: Send to audio engine
+
+                // Send Start command to audio engine
+                if let Some(tx) = &mut audio_command_tx
+                    && let Err(e) = tx.0.push(vvdaw_comms::AudioCommand::Start)
+                {
+                    tracing::error!("Failed to send Start command to audio engine: {e:?}");
+                }
             }
             PlaybackCommand::Pause => {
                 info!("Pause command");
                 state.status = PlaybackStatus::Paused;
-                // TODO: Send to audio engine
+
+                // Send Stop command to audio engine (pause = stop)
+                if let Some(tx) = &mut audio_command_tx
+                    && let Err(e) = tx.0.push(vvdaw_comms::AudioCommand::Stop)
+                {
+                    tracing::error!("Failed to send Stop command to audio engine: {e:?}");
+                }
             }
             PlaybackCommand::Stop => {
                 info!("Stop command");
                 state.status = PlaybackStatus::Stopped;
                 state.current_position = 0.0;
-                // TODO: Send to audio engine
+
+                // Send Stop command to audio engine
+                if let Some(tx) = &mut audio_command_tx
+                    && let Err(e) = tx.0.push(vvdaw_comms::AudioCommand::Stop)
+                {
+                    tracing::error!("Failed to send Stop command to audio engine: {e:?}");
+                }
             }
             PlaybackCommand::Toggle => {
                 match state.status {
                     PlaybackStatus::Stopped | PlaybackStatus::Paused => {
                         info!("Toggle -> Play");
                         state.status = PlaybackStatus::Playing;
+
+                        // Send Start command to audio engine
+                        if let Some(tx) = &mut audio_command_tx
+                            && let Err(e) = tx.0.push(vvdaw_comms::AudioCommand::Start)
+                        {
+                            tracing::error!("Failed to send Start command to audio engine: {e:?}");
+                        }
                     }
                     PlaybackStatus::Playing => {
                         info!("Toggle -> Pause");
                         state.status = PlaybackStatus::Paused;
+
+                        // Send Stop command to audio engine (pause = stop)
+                        if let Some(tx) = &mut audio_command_tx
+                            && let Err(e) = tx.0.push(vvdaw_comms::AudioCommand::Stop)
+                        {
+                            tracing::error!("Failed to send Stop command to audio engine: {e:?}");
+                        }
                     }
                 }
-                // TODO: Send to audio engine
             }
             PlaybackCommand::Seek(position) => {
                 info!("Seek to {position}s");
                 state.current_position = position.clamp(0.0, state.total_duration);
-                // TODO: Send to audio engine
+                // TODO: Implement seeking in sampler
             }
         }
     }

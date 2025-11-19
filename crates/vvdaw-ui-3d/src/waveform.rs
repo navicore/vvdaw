@@ -111,6 +111,8 @@ pub struct WaveformMeshConfig {
     pub time_scale: f32,
     /// Base height above the road surface (center line of waveform)
     pub base_height: f32,
+    /// Time window to render (seconds before and after current position)
+    pub window_duration: f32,
 }
 
 impl Default for WaveformMeshConfig {
@@ -119,21 +121,25 @@ impl Default for WaveformMeshConfig {
             sample_stride: 10, // Skip samples for performance
             width: 0.5,
             amplitude_scale: 10.0,
-            time_scale: 50.0,  // 50 units per second
-            base_height: 10.0, // Elevate waveform 10 units above the road
+            time_scale: 50.0,      // 50 units per second
+            base_height: 10.0,     // Elevate waveform 10 units above the road
+            window_duration: 15.0, // Render 15 seconds ahead and behind (30 total)
         }
     }
 }
 
-/// Generate a 3D mesh from channel samples
+/// Generate a 3D mesh from channel samples for a time window
 ///
 /// Creates a wall-like mesh where:
 /// - Z-axis = time (along the highway, extending backward)
 /// - Y-axis = amplitude (height of the wall)
 /// - X-axis = thickness (width of the wall, should match wall X position)
+///
+/// Only renders samples within the time window centered on `current_position_seconds`
 pub fn generate_channel_mesh(
     samples: &[f32],
     sample_rate: u32,
+    current_position_seconds: f32,
     config: &WaveformMeshConfig,
 ) -> Mesh {
     let mut positions = Vec::new();
@@ -150,18 +156,41 @@ pub fn generate_channel_mesh(
     // Validate sample_stride to prevent division by zero
     let sample_stride = config.sample_stride.max(1);
 
+    // Calculate time window bounds
+    let start_time = (current_position_seconds - config.window_duration).max(0.0);
+    let end_time = current_position_seconds + config.window_duration;
+
+    // Convert to sample indices
+    let start_sample = (start_time * sample_rate as f32) as usize;
+    let end_sample = ((end_time * sample_rate as f32) as usize).min(samples.len());
+
+    // Early return if window is outside sample range
+    if start_sample >= samples.len() || start_sample >= end_sample {
+        return Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+    }
+
     // Calculate time per sample
     let time_per_sample = 1.0 / sample_rate as f32;
 
-    // Generate vertices
+    // Generate vertices only for the visible window
     let mut vertex_index: u32 = 0;
+    let mut first_vertex = true;
 
-    for (i, sample) in samples.iter().step_by(sample_stride).enumerate() {
-        let time = (i * sample_stride) as f32 * time_per_sample;
-        let z = -time * config.time_scale; // Negative so it extends backward along highway
+    for sample_idx in (start_sample..end_sample).step_by(sample_stride) {
+        let sample = samples[sample_idx];
+
+        // Time relative to the start of the audio
+        let absolute_time = sample_idx as f32 * time_per_sample;
+
+        // Z position relative to current playback position (keeps mesh centered at origin)
+        let relative_time = absolute_time - current_position_seconds;
+        let z = -relative_time * config.time_scale;
 
         // Waveform oscillates around base_height (center line)
-        let y_wave = config.base_height + (sample * config.amplitude_scale);
+        let y_wave = sample.mul_add(config.amplitude_scale, config.base_height);
         let y_center = config.base_height;
         let half_width = config.width / 2.0;
 
@@ -175,13 +204,8 @@ pub fn generate_channel_mesh(
         positions.push([-half_width, y_center, z]); // Center line
 
         // Create indices for quad (if not the first vertex)
-        if i > 0 {
+        if !first_vertex {
             let base = vertex_index;
-
-            // Safety: vertex_index is always >= 4 here because:
-            // - First iteration (i=0) is skipped by the if check
-            // - Second iteration (i=1) has vertex_index = 4 (safe for base-4)
-            debug_assert!(base >= 4, "vertex_index must be >= 4 to safely subtract 4");
 
             // Front face (2 triangles)
             indices.push(base - 4);
@@ -202,6 +226,7 @@ pub fn generate_channel_mesh(
             indices.push(base + 3);
         }
 
+        first_vertex = false;
         vertex_index += 4;
     }
 
