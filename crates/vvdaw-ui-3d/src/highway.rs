@@ -107,7 +107,8 @@ fn setup_highway(
 
 /// Update waveform wall meshes dynamically as playback advances
 ///
-/// Creates a scrolling waveform window that follows the playback position
+/// Creates a scrolling waveform window that follows the playback position.
+/// Throttles updates to only regenerate meshes when position changes significantly.
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters must be passed by value
 fn update_waveform_meshes(
     mut waveform: ResMut<WaveformData>,
@@ -117,6 +118,10 @@ fn update_waveform_meshes(
     left_query: Query<(Entity, &Mesh3d), With<LeftWall>>,
     right_query: Query<(Entity, &Mesh3d), With<RightWall>>,
 ) {
+    // Throttle mesh updates: only regenerate if position changed significantly
+    // or if force update is requested (e.g., new file loaded)
+    const UPDATE_THRESHOLD: f32 = 0.5; // Update every 0.5 seconds of playback
+
     // Only update if waveform is loaded
     if !waveform.is_loaded() {
         if waveform.needs_mesh_update {
@@ -127,6 +132,12 @@ fn update_waveform_meshes(
 
     // Get current playback position in seconds
     let current_position = playback.current_position;
+
+    let position_delta = (current_position - waveform.last_mesh_position).abs();
+
+    if !waveform.needs_mesh_update && position_delta < UPDATE_THRESHOLD {
+        return; // Skip update - position hasn't changed enough
+    }
 
     // Configuration for scrolling waveform window
     let config = WaveformMeshConfig {
@@ -163,7 +174,8 @@ fn update_waveform_meshes(
         commands.entity(entity).insert(Mesh3d(new_handle));
     }
 
-    // Clear the update flag
+    // Update tracking and clear flags
+    waveform.last_mesh_position = current_position;
     waveform.needs_mesh_update = false;
 }
 

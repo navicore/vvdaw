@@ -31,6 +31,10 @@ pub struct WaveformData {
 
     /// Flag to force mesh regeneration (set when new file is loaded)
     pub needs_mesh_update: bool,
+
+    /// Last position (in seconds) where mesh was generated
+    /// Used to throttle mesh updates - only regenerate when position changes significantly
+    pub last_mesh_position: f32,
 }
 
 impl WaveformData {
@@ -43,6 +47,7 @@ impl WaveformData {
             current_position: 0,
             max_streaming_samples: 9000, // ~100 seconds at 90 samples/sec
             needs_mesh_update: true,     // Always request mesh update for new data
+            last_mesh_position: 0.0,
         }
     }
 
@@ -65,6 +70,7 @@ impl WaveformData {
     pub fn clear_streaming(&mut self) {
         self.streaming_peaks.clear();
         self.current_position = 0;
+        self.last_mesh_position = 0.0;
     }
 
     /// Get streaming peak data for visualization
