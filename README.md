@@ -1,5 +1,8 @@
 # vvdaw - Visual Virtual DAW
 
+> ⚠️ **PRE-ALPHA SOFTWARE** - Under active development. Not ready for production use.
+> APIs are unstable and will change without notice.
+
 An experimental DAW with a 2D/3D game-like interface built with Rust, Bevy, and VST3 plugin hosting.
 
 ## Project Structure
@@ -18,9 +21,10 @@ This is a cargo workspace containing multiple crates:
 - **vvdaw-vst3** - VST3 plugin host implementation
 - **vvdaw-clap** - CLAP plugin host implementation (future)
 
-### UI Crate
+### UI Crates
 
-- **vvdaw-ui** - Bevy-based 2D/3D visualization and interaction
+- **vvdaw-ui** - Bevy-based 2D traditional UI with file browser and playback controls
+- **vvdaw-ui-3d** - Experimental 3D "highway" visualization with scrolling waveform walls
 
 ### Application
 
@@ -55,8 +59,14 @@ cargo build
 # Build release
 cargo build --release
 
-# Run the application
+# Run the application (defaults to 3D mode)
 cargo run --bin vvdaw
+
+# Run with 2D UI
+cargo run --bin vvdaw -- --ui 2d
+
+# Run with 3D UI (default)
+cargo run --bin vvdaw -- --ui 3d
 
 # Run tests
 cargo test
@@ -64,13 +74,15 @@ cargo test
 
 ## Dependencies
 
-- **Bevy 0.15** - Game engine for UI
+- **Bevy 0.17** - Game engine for UI
 - **cpal 0.15** - Cross-platform audio I/O
 - **VST3 SDK** (MIT) - Rust bindings generated via bindgen
-- **rtrb** - Real-time safe ring buffer
-- **triple-buffer** - Lock-free triple buffering
-- **bindgen** - Generate Rust FFI bindings from C/C++ headers
-- **libloading** - Dynamic library loading for plugins
+- **rtrb 0.3** - Real-time safe ring buffer
+- **triple-buffer 8.0** - Lock-free triple buffering
+- **dasp 0.11** - Digital audio signal processing (resampling)
+- **hound 3.5** - WAV file I/O
+- **bindgen 0.72** - Generate Rust FFI bindings from C/C++ headers
+- **libloading 0.8** - Dynamic library loading for plugins
 
 ## Examples
 
@@ -84,19 +96,33 @@ cargo run --example load_vst3 -- /path/to/plugin.vst3
 
 ## Development Status
 
-🚧 **Early Development** - Currently in proof-of-concept phase
+🚧 **Pre-Alpha** - Core functionality working but under heavy development
 
-### Current Phase: VST3 Plugin Host
+### Completed Features
 
-- [x] Workspace structure
-- [x] Core type definitions
-- [x] Communication primitives API
-- [x] Audio engine implementation (cpal + real-time thread)
-- [x] VST3 plugin loading (complete COM interface wrapping)
-- [x] AudioGraph with plugin integration
-- [x] Working VST3 plugin example
-- [ ] Basic UI
+- [x] Workspace structure with 8 crates
+- [x] Core type definitions and plugin abstraction
+- [x] Lock-free communication primitives (rtrb ring buffers)
+- [x] Real-time audio engine (cpal + dedicated audio thread)
+- [x] VST3 plugin loading and hosting
+- [x] Audio processing graph with node management
+- [x] 2D UI with file browser and playback controls
+- [x] **3D "Highway" UI** - Experimental visualization with:
+  - Scrolling waveform walls following playback
+  - Real-time audio playback with position tracking
+  - Load-time sample rate conversion (44.1kHz ↔ 48kHz)
+  - Window-based waveform rendering for constant memory
+  - Free-flying camera controls
+
+### In Progress / Planned
+
+- [ ] Timeline/sequencer view
+- [ ] MIDI support
+- [ ] Mixer with effects routing
+- [ ] Additional plugin formats (CLAP, LV2)
+- [ ] Automation recording and playback
+- [ ] Project save/load
 
 ## License
 
-MIT OR Apache-2.0
+MIT

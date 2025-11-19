@@ -16,10 +16,10 @@ default-members = ["crates/vvdaw-app"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = ["Your Name <your.email@example.com>"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/vvdaw"
-description = "Visual Virtual DAW - An experimental DAW with 2D/3D game-like interface"
+authors = ["Ed Sweeney <ed@onextent.com>"]
+license = "MIT"
+repository = "https://github.com/navicore/vvdaw"
+description = "Visual Virtual DAW - An experimental DAW with 2D/3D game-like interface (pre-alpha)"
 keywords = ["audio", "daw", "vst3", "music", "bevy"]
 categories = ["multimedia::audio"]
 readme = "README.md"
