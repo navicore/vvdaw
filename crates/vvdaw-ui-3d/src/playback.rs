@@ -1,6 +1,7 @@
 //! Playback state and control systems
 
 use bevy::prelude::*;
+use leafwing_input_manager::prelude::*;
 use tracing::info;
 
 /// Plugin that manages playback state
@@ -8,12 +9,25 @@ pub struct PlaybackPlugin;
 
 impl Plugin for PlaybackPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PlaybackState>()
+        app.add_plugins(InputManagerPlugin::<PlaybackAction>::default())
+            .init_resource::<PlaybackState>()
             .add_message::<PlaybackCommand>()
+            .add_systems(Startup, setup_playback_input)
             .add_systems(Update, keyboard_input_system)
             .add_systems(Update, handle_playback_commands);
     }
 }
+
+/// Actions for playback control
+#[derive(Actionlike, PartialEq, Eq, Clone, Copy, Hash, Debug, Reflect)]
+pub enum PlaybackAction {
+    Toggle,
+    Stop,
+}
+
+/// Marker component for playback controller
+#[derive(Component)]
+struct PlaybackController;
 
 /// Current playback state
 #[derive(Resource, Debug)]
@@ -56,19 +70,34 @@ pub enum PlaybackCommand {
 
 impl Message for PlaybackCommand {}
 
+/// Setup playback input controls
+fn setup_playback_input(mut commands: Commands) {
+    // Create input map for playback controls
+    let input_map = InputMap::new([
+        (PlaybackAction::Toggle, KeyCode::Space),
+        (PlaybackAction::Stop, KeyCode::KeyX),
+    ]);
+
+    commands.spawn((PlaybackController, input_map));
+}
+
 /// System to handle keyboard input for playback controls
 #[allow(clippy::needless_pass_by_value)]
 fn keyboard_input_system(
-    keyboard: Res<ButtonInput<KeyCode>>,
+    query: Query<&ActionState<PlaybackAction>, With<PlaybackController>>,
     mut commands: MessageWriter<PlaybackCommand>,
 ) {
+    let Ok(action_state) = query.single() else {
+        return;
+    };
+
     // Space: Toggle play/pause
-    if keyboard.just_pressed(KeyCode::Space) {
+    if action_state.just_pressed(&PlaybackAction::Toggle) {
         commands.write(PlaybackCommand::Toggle);
     }
 
-    // X: Stop (changed from S to avoid conflict with camera backward movement)
-    if keyboard.just_pressed(KeyCode::KeyX) {
+    // X: Stop
+    if action_state.just_pressed(&PlaybackAction::Stop) {
         commands.write(PlaybackCommand::Stop);
     }
 }
