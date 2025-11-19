@@ -13,6 +13,7 @@
 //!   Right Mouse + Move - Look around
 //!   Esc - Exit
 
+use vvdaw_comms::create_channels;
 use vvdaw_ui_3d::create_app;
 
 fn main() {
@@ -26,5 +27,8 @@ fn main() {
     println!("  Esc - Exit");
     println!();
 
-    create_app().run();
+    // Create communication channels (visualization only - no audio engine)
+    let (ui_channels, _audio_channels) = create_channels(256);
+
+    create_app(ui_channels).run();
 }

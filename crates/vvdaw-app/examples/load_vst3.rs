@@ -25,6 +25,7 @@ use vvdaw_comms::{AudioCommand, AudioEvent, create_channels};
 use vvdaw_plugin::Plugin;
 use vvdaw_vst3::load_plugin;
 
+#[allow(clippy::too_many_lines)] // Example code demonstrating VST3 loading
 fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
@@ -138,6 +139,9 @@ fn main() -> Result<()> {
                 }
                 AudioEvent::NodeAdded { node_id } => {
                     println!("→ Node {node_id} added to audio graph");
+                }
+                AudioEvent::NodeRemoved { node_id } => {
+                    println!("→ Node {node_id} removed from audio graph");
                 }
                 AudioEvent::WaveformSample { .. } => {
                     // Ignore waveform samples in this example

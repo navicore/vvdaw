@@ -6,7 +6,7 @@ use vvdaw_plugin::{AudioBuffer, EventBuffer, Plugin, PluginError, PluginInfo};
 /// Sample playback processor
 ///
 /// Plays back pre-loaded audio samples (e.g., from WAV files).
-/// Continuously loops the audio while playing.
+/// Plays once and outputs silence after reaching the end.
 ///
 /// # Real-Time Safety
 ///
@@ -151,18 +151,23 @@ impl Plugin for SamplerProcessor {
             return Ok(());
         }
 
-        // Output samples with looping
+        // Output samples (stop at end, no looping)
         for i in 0..audio.frames {
-            // Get current frame position (with wrapping)
-            let frame_pos = self.position % frame_count;
-            let sample_pos = frame_pos * 2; // Convert to sample index (interleaved stereo)
+            // Check if we've reached the end
+            if self.position >= frame_count {
+                // Output silence for remaining samples
+                audio.outputs[0][i] = 0.0;
+                audio.outputs[1][i] = 0.0;
+            } else {
+                let sample_pos = self.position * 2; // Convert to sample index (interleaved stereo)
 
-            // Output left and right channels
-            audio.outputs[0][i] = self.samples[sample_pos]; // Left
-            audio.outputs[1][i] = self.samples[sample_pos + 1]; // Right
+                // Output left and right channels
+                audio.outputs[0][i] = self.samples[sample_pos]; // Left
+                audio.outputs[1][i] = self.samples[sample_pos + 1]; // Right
 
-            // Advance position
-            self.position += 1;
+                // Advance position
+                self.position += 1;
+            }
         }
 
         Ok(())
@@ -221,15 +226,15 @@ mod tests {
             .process(&mut audio, &EventBuffer::default())
             .unwrap();
 
-        // Should play 2 frames then loop
+        // Should play 2 frames then output silence
         assert_eq!(output_l[0], 1.0); // Frame 0 left
         assert_eq!(output_r[0], -1.0); // Frame 0 right
         assert_eq!(output_l[1], 0.5); // Frame 1 left
         assert_eq!(output_r[1], -0.5); // Frame 1 right
-        assert_eq!(output_l[2], 1.0); // Loop back to frame 0
-        assert_eq!(output_r[2], -1.0);
-        assert_eq!(output_l[3], 0.5); // Frame 1 again
-        assert_eq!(output_r[3], -0.5);
+        assert_eq!(output_l[2], 0.0); // Silence after end
+        assert_eq!(output_r[2], 0.0);
+        assert_eq!(output_l[3], 0.0); // Silence continues
+        assert_eq!(output_r[3], 0.0);
     }
 
     #[test]

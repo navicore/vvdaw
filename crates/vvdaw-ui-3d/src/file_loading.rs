@@ -18,6 +18,7 @@ impl Plugin for FileLoadingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FileLoadTask>()
             .init_resource::<FileLoadingState>()
+            .init_resource::<CurrentSamplerNode>()
             .add_message::<FileSelected>()
             .add_systems(
                 Update,
@@ -37,6 +38,12 @@ struct FileLoadTask {
 pub struct FileLoadingState {
     pub is_loading: bool,
     pub error: Option<String>,
+}
+
+/// Resource for tracking the currently loaded sampler node
+#[derive(Resource, Default)]
+pub struct CurrentSamplerNode {
+    pub node_id: Option<usize>,
 }
 
 impl FileLoadingState {
@@ -94,11 +101,16 @@ fn start_file_load_system(
 }
 
 /// System that polls for completed file loads
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+#[allow(clippy::needless_pass_by_value)] // Bevy SystemParam requires Option<Res<T>>, not Option<&Res<T>>
 fn poll_file_load_system(
     mut load_task: ResMut<FileLoadTask>,
     mut waveform_data: ResMut<WaveformData>,
     mut playback_state: ResMut<PlaybackState>,
     mut loading_state: ResMut<FileLoadingState>,
+    mut current_sampler: ResMut<CurrentSamplerNode>,
+    mut audio_command_tx: Option<ResMut<crate::AudioCommandChannel>>,
+    audio_plugin_tx: Option<Res<crate::AudioPluginChannel>>,
 ) {
     if let Some(task) = load_task.pending.take() {
         if task.is_finished() {
@@ -110,7 +122,11 @@ fn poll_file_load_system(
                         audio.sample_rate
                     );
 
-                    // Update waveform data
+                    // Clone samples for audio engine (will be moved into sampler)
+                    let samples_for_engine = audio.samples.clone();
+                    let sample_rate = audio.sample_rate;
+
+                    // Update waveform data (for visualization)
                     waveform_data.clear_streaming();
                     waveform_data.samples = audio.samples;
                     waveform_data.sample_rate = audio.sample_rate;
@@ -129,6 +145,70 @@ fn poll_file_load_system(
                     playback_state.total_duration =
                         waveform_data.frame_count() as f32 / audio.sample_rate as f32;
                     playback_state.current_position = 0.0;
+
+                    // Send sampler to audio engine
+                    if let (Some(cmd_tx), Some(plugin_tx)) =
+                        (&mut audio_command_tx, &audio_plugin_tx)
+                    {
+                        info!("Preparing to send sampler to audio engine");
+
+                        // Step 1: Stop playback (required before modifying graph)
+                        if playback_state.status == crate::playback::PlaybackStatus::Stopped {
+                            info!("Playback already stopped, skipping Stop command");
+                        } else {
+                            info!(
+                                "→ Sending Stop command (playback is {:?})",
+                                playback_state.status
+                            );
+                            if let Err(e) = cmd_tx.0.push(vvdaw_comms::AudioCommand::Stop) {
+                                error!("✗ Failed to send Stop command: {e:?}");
+                            }
+                            playback_state.status = crate::playback::PlaybackStatus::Stopped;
+                        }
+
+                        // Step 2: Remove old sampler node if it exists
+                        if let Some(old_node_id) = current_sampler.node_id {
+                            info!("→ Sending RemoveNode({old_node_id}) command");
+                            if let Err(e) = cmd_tx
+                                .0
+                                .push(vvdaw_comms::AudioCommand::RemoveNode(old_node_id))
+                            {
+                                error!("✗ Failed to send RemoveNode command: {e:?}");
+                            }
+                            current_sampler.node_id = None;
+                        } else {
+                            info!("No existing sampler node to remove");
+                        }
+
+                        // Step 3: Create and send new sampler
+                        info!("→ Creating new sampler processor");
+                        let sampler = vvdaw_audio::builtin::sampler::SamplerProcessor::new(
+                            samples_for_engine,
+                            sample_rate,
+                        );
+
+                        // Send plugin instance to audio thread
+                        info!("→ Sending plugin instance via crossbeam_channel");
+                        if let Err(e) = plugin_tx.0.send(Box::new(sampler)) {
+                            error!("✗ Failed to send sampler to audio engine: {e}");
+                            loading_state.fail_with_error(format!("Audio engine error: {e}"));
+                            return;
+                        }
+
+                        // Send AddNode command (audio thread will create the node)
+                        info!("→ Sending AddNode command");
+                        if let Err(e) = cmd_tx.0.push(vvdaw_comms::AudioCommand::AddNode) {
+                            error!("✗ Failed to send AddNode command: {e:?}");
+                            loading_state.fail_with_error(
+                                "Failed to add sampler to audio graph".to_string(),
+                            );
+                            return;
+                        }
+
+                        info!("✓ All commands sent to audio engine");
+                    } else {
+                        tracing::warn!("Audio engine not available - visualization only");
+                    }
 
                     // Update loading state
                     loading_state.complete_successfully();
@@ -150,6 +230,78 @@ fn poll_file_load_system(
             load_task.pending = Some(task);
         }
     }
+}
+
+/// Target sample rate for the audio engine
+const ENGINE_SAMPLE_RATE: u32 = 48000;
+
+/// Resample stereo audio from one sample rate to another using linear interpolation
+fn resample_stereo(stereo_samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
+    use dasp::{Signal, interpolate::linear::Linear, signal};
+
+    // Early validation: handle empty input
+    if stereo_samples.is_empty() {
+        debug!("Resample called with empty input, returning empty Vec");
+        return Vec::new();
+    }
+
+    // Early validation: prevent division by zero
+    if source_rate == 0 {
+        error!("Source sample rate is 0, cannot resample");
+        return stereo_samples.to_vec();
+    }
+
+    if target_rate == 0 {
+        error!("Target sample rate is 0, cannot resample");
+        return stereo_samples.to_vec();
+    }
+
+    info!(
+        "Resampling from {}Hz to {}Hz ({:.1}% speed change)",
+        source_rate,
+        target_rate,
+        ((f64::from(target_rate) / f64::from(source_rate)) - 1.0) * 100.0
+    );
+
+    // Convert interleaved stereo to stereo frames [[L, R], [L, R], ...]
+    let frame_count = stereo_samples.len() / 2;
+    let stereo_frames: Vec<[f32; 2]> = stereo_samples
+        .chunks_exact(2)
+        .map(|chunk| [chunk[0], chunk[1]])
+        .collect();
+
+    // Create signal from stereo frames
+    let stereo_signal = signal::from_iter(stereo_frames.iter().copied());
+
+    // Calculate number of output frames
+    let source_rate_f64 = f64::from(source_rate);
+    let target_rate_f64 = f64::from(target_rate);
+    let output_frame_count =
+        ((frame_count as f64) * (target_rate_f64 / source_rate_f64)).ceil() as usize;
+
+    // Resample stereo signal using linear interpolation
+    let resampled_frames: Vec<[f32; 2]> = stereo_signal
+        .from_hz_to_hz(
+            Linear::new([0.0, 0.0], [0.0, 0.0]), // Stereo interpolator state
+            source_rate_f64,
+            target_rate_f64,
+        )
+        .take(output_frame_count)
+        .collect();
+
+    // Convert stereo frames back to interleaved samples
+    let mut resampled = Vec::with_capacity(output_frame_count * 2);
+    for frame in resampled_frames {
+        resampled.push(frame[0]); // Left
+        resampled.push(frame[1]); // Right
+    }
+
+    info!(
+        "✓ Resampled: {} → {} frames",
+        frame_count, output_frame_count
+    );
+
+    resampled
 }
 
 /// Load a WAV file and return audio data
@@ -260,9 +412,17 @@ fn load_wav_file(path: &Path) -> Result<LoadedAudio, String> {
         }
     };
 
+    // Resample to engine sample rate if needed (load-time resampling)
+    let (final_samples, final_sample_rate) = if sample_rate == ENGINE_SAMPLE_RATE {
+        (stereo_samples, sample_rate)
+    } else {
+        let resampled = resample_stereo(&stereo_samples, sample_rate, ENGINE_SAMPLE_RATE);
+        (resampled, ENGINE_SAMPLE_RATE)
+    };
+
     Ok(LoadedAudio {
-        samples: stereo_samples,
-        sample_rate,
+        samples: final_samples,
+        sample_rate: final_sample_rate,
         path: canonical_path,
     })
 }
@@ -359,5 +519,62 @@ mod tests {
         // Clear error
         state.clear_error();
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn test_resample_stereo_empty_input() {
+        let result = resample_stereo(&[], 44100, 48000);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_resample_stereo_zero_source_rate() {
+        // Should return input unchanged when source rate is 0 (defensive behavior)
+        let input = vec![0.1, -0.1, 0.2, -0.2];
+        let result = resample_stereo(&input, 0, 48000);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_resample_stereo_zero_target_rate() {
+        // Should return input unchanged when target rate is 0 (defensive behavior)
+        let input = vec![0.1, -0.1, 0.2, -0.2];
+        let result = resample_stereo(&input, 44100, 0);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_resample_stereo_valid_upsampling() {
+        // Test upsampling from 44.1kHz to 48kHz (small sample)
+        let input = vec![0.5, -0.5, 0.3, -0.3]; // 2 stereo frames
+        let result = resample_stereo(&input, 44100, 48000);
+
+        // Should have more frames after upsampling (44.1 -> 48 is ~8.8% increase)
+        // 2 frames * (48000/44100) ≈ 2.18 frames → ceil to 3 frames = 6 samples
+        assert!(!result.is_empty());
+        assert!(result.len() >= input.len());
+    }
+
+    #[test]
+    fn test_resample_stereo_valid_downsampling() {
+        // Test downsampling from 48kHz to 44.1kHz (small sample)
+        let input = vec![0.5, -0.5, 0.3, -0.3, 0.1, -0.1]; // 3 stereo frames
+        let result = resample_stereo(&input, 48000, 44100);
+
+        // Should have fewer frames after downsampling (48 -> 44.1 is ~8.2% decrease)
+        // 3 frames * (44100/48000) ≈ 2.75 frames → ceil to 3 frames = 6 samples
+        assert!(!result.is_empty());
+        assert!(result.len() <= input.len() + 2); // Allow small rounding difference
+    }
+
+    #[test]
+    fn test_resample_stereo_same_rate() {
+        // When source and target rates are the same, should be close to input
+        let input = vec![0.5, -0.5, 0.3, -0.3];
+        let result = resample_stereo(&input, 48000, 48000);
+
+        // Should have similar length (may differ slightly due to interpolation)
+        assert!(!result.is_empty());
+        assert!((result.len() as i32 - input.len() as i32).abs() <= 2);
     }
 }

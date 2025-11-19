@@ -86,14 +86,18 @@ fn run_2d_ui(args: &Args) -> Result<()> {
     // goes out of scope and its Drop impl is called, which stops the audio
     // stream. This ensures proper cleanup in all exit scenarios.
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "VVDAW - 2D UI".to_string(),
-                resolution: (800, 600).into(),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "VVDAW - 2D UI".to_string(),
+                        resolution: (800, 600).into(),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .disable::<bevy::log::LogPlugin>(), // Disable Bevy's LogPlugin - we initialize tracing manually
+        )
         .add_plugins(VvdawUiPlugin::new(ui_channels))
         .run();
 
@@ -127,9 +131,25 @@ fn run_3d_ui(args: &Args) {
     println!("Use File > Load WAV to get started!");
     println!();
 
-    // Create and run Bevy app with 3D UI
-    // The Highway3dPlugin now includes menu system and file loading
-    vvdaw_ui_3d::create_app().run();
+    // Create communication channels
+    let (ui_channels, audio_channels) = create_channels(256);
 
-    tracing::info!("Bevy app exited");
+    // Create audio configuration
+    let audio_config = AudioConfig::default();
+    tracing::info!("Audio config: {:?}", audio_config);
+
+    // Create and start audio engine
+    let mut engine = AudioEngine::new(audio_config);
+    if let Err(e) = engine.start(audio_channels) {
+        tracing::error!("Failed to start audio engine: {e}");
+        tracing::warn!("Continuing without audio - visuals will still work");
+    } else {
+        tracing::info!("Audio engine started");
+    }
+
+    // Create and run Bevy app with 3D UI
+    // Pass UI channels so systems can communicate with audio thread
+    vvdaw_ui_3d::create_app(ui_channels).run();
+
+    tracing::info!("Bevy app exited - audio engine will be cleaned up");
 }

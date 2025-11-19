@@ -6,6 +6,7 @@
 //! This is a modular UI experiment - one of potentially many 3D interface approaches.
 
 use bevy::prelude::*;
+use vvdaw_comms::UiChannels;
 
 pub mod camera;
 pub mod file_loading;
@@ -14,6 +15,42 @@ pub mod menu;
 pub mod playback;
 pub mod scene;
 pub mod waveform;
+
+/// Resource wrapping the command sender (UI -> Audio)
+pub struct AudioCommandChannel(pub vvdaw_comms::CommandSender);
+
+// SAFETY: Manual Send + Sync implementation required for rtrb::Producer
+//
+// WHY THIS IS NEEDED:
+// `rtrb::Producer<T>` does not automatically implement `Sync` because it contains:
+// - `std::cell::Cell<usize>` (interior mutability without synchronization)
+// - `*mut T` raw pointers (not Send/Sync by default)
+//
+// These are implementation details of rtrb's lock-free algorithm, NOT a signal
+// that the type is unsafe to use across threads.
+//
+// WHY THIS IS SAFE:
+// 1. `rtrb::Producer` is explicitly designed for cross-thread communication
+//    (single producer on one thread, single consumer on another thread)
+// 2. Bevy's `Resource` system guarantees exclusive access - only one system
+//    can access a resource at a time, preventing concurrent `&` or `&mut` access
+// 3. The producer and consumer ends are completely separate - the audio thread
+//    never touches the Producer, only the Consumer
+// 4. rtrb uses atomic operations internally for thread-safe coordination
+//
+// This pattern is documented in Bevy community resources for wrapping SPSC channels.
+#[allow(unsafe_code)]
+unsafe impl Send for AudioCommandChannel {}
+#[allow(unsafe_code)]
+unsafe impl Sync for AudioCommandChannel {}
+
+impl Resource for AudioCommandChannel {}
+
+/// Resource wrapping the plugin sender (UI -> Audio)
+pub struct AudioPluginChannel(pub crossbeam_channel::Sender<vvdaw_comms::PluginInstance>);
+
+// crossbeam_channel::Sender already implements Send + Sync, so no manual impl needed
+impl Resource for AudioPluginChannel {}
 
 /// Plugin that sets up the 3D highway UI
 pub struct Highway3dPlugin;
@@ -34,18 +71,31 @@ impl Plugin for Highway3dPlugin {
 }
 
 /// Create a Bevy app configured for the 3D highway UI
-pub fn create_app() -> App {
+pub fn create_app(ui_channels: UiChannels) -> App {
     let mut app = App::new();
 
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "vvdaw - 3D Highway UI".to_string(),
-            resolution: (1920, 1080).into(),
-            ..default()
-        }),
-        ..default()
-    }))
-    .add_plugins(Highway3dPlugin);
+    // Extract channels for resources
+    let command_tx = ui_channels.command_tx;
+    let event_rx = ui_channels.event_rx;
+    let plugin_tx = ui_channels.plugin_tx;
+
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "vvdaw - 3D Highway UI".to_string(),
+                    resolution: (1920, 1080).into(),
+                    ..default()
+                }),
+                ..default()
+            })
+            .disable::<bevy::log::LogPlugin>(), // Disable Bevy's LogPlugin - tracing is initialized in main.rs
+    )
+    .add_plugins(Highway3dPlugin)
+    // Insert audio communication channels as resources
+    .insert_resource(AudioCommandChannel(command_tx))
+    .insert_resource(AudioPluginChannel(plugin_tx))
+    .insert_resource(highway::AudioEventChannel(event_rx));
 
     app
 }

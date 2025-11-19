@@ -531,6 +531,9 @@ pub fn poll_audio_events(
                 // Track this as the current sampler (assuming UI only adds samplers)
                 audio_state.current_sampler_node = Some(node_id);
             }
+            AudioEvent::NodeRemoved { node_id } => {
+                tracing::debug!("Node removed from graph: {node_id}");
+            }
             AudioEvent::WaveformSample { .. } => {
                 // Waveform samples are handled by 3D visualization, ignore in 2D UI
             }

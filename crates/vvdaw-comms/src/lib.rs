@@ -65,6 +65,14 @@ pub enum AudioEvent {
         /// The ID assigned to the newly added node
         node_id: usize,
     },
+    /// Node was removed from the graph
+    ///
+    /// Sent after `RemoveNode` command succeeds.
+    /// This confirms the node has been removed from the audio graph.
+    NodeRemoved {
+        /// The ID of the removed node
+        node_id: usize,
+    },
     /// Waveform sample data for visualization
     ///
     /// Sent from audio thread with peak values for the current audio buffer.

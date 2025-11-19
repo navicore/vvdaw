@@ -13,11 +13,26 @@ use vvdaw_comms::{AudioEvent, EventReceiver};
 /// Resource wrapping the audio event receiver channel
 pub struct AudioEventChannel(pub EventReceiver);
 
-// SAFETY: This is safe because:
-// 1. EventReceiver (rtrb::Consumer) is specifically designed for lock-free single-consumer use
-// 2. Bevy guarantees single-threaded access to Resources (no concurrent access)
-// 3. The audio thread (producer) and UI thread (consumer) never access the same end
-// 4. rtrb uses atomic operations internally for thread-safe communication
+// SAFETY: Manual Send + Sync implementation required for rtrb::Consumer
+//
+// WHY THIS IS NEEDED:
+// `rtrb::Consumer<T>` does not automatically implement `Sync` because it contains:
+// - `std::cell::Cell<usize>` (interior mutability without synchronization)
+// - `*mut T` raw pointers (not Send/Sync by default)
+//
+// These are implementation details of rtrb's lock-free algorithm, NOT a signal
+// that the type is unsafe to use across threads.
+//
+// WHY THIS IS SAFE:
+// 1. `rtrb::Consumer` is explicitly designed for cross-thread communication
+//    (single producer on one thread, single consumer on another thread)
+// 2. Bevy's `Resource` system guarantees exclusive access - only one system
+//    can access a resource at a time, preventing concurrent `&` or `&mut` access
+// 3. The producer and consumer ends are completely separate - the UI thread
+//    never touches the Producer, only the Consumer
+// 4. rtrb uses atomic operations internally for thread-safe coordination
+//
+// This pattern is documented in Bevy community resources for wrapping SPSC channels.
 #[allow(unsafe_code)]
 unsafe impl Send for AudioEventChannel {}
 #[allow(unsafe_code)]
@@ -31,7 +46,8 @@ impl Plugin for HighwayPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup_highway)
             .add_systems(Update, process_audio_events)
-            .add_systems(Update, update_waveform_meshes);
+            .add_systems(Update, update_waveform_meshes)
+            .add_systems(Update, update_playback_position);
     }
 }
 
@@ -104,87 +120,88 @@ fn setup_highway(
     ));
 }
 
-/// Update waveform wall meshes when waveform data changes
+/// Update waveform wall meshes dynamically as playback advances
+///
+/// Creates a scrolling waveform window that follows the playback position.
+/// Throttles updates to only regenerate meshes when position changes significantly.
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters must be passed by value
 fn update_waveform_meshes(
     mut waveform: ResMut<WaveformData>,
+    playback: Res<crate::playback::PlaybackState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
     left_query: Query<(Entity, &Mesh3d), With<LeftWall>>,
     right_query: Query<(Entity, &Mesh3d), With<RightWall>>,
 ) {
-    const TARGET_LENGTH: f32 = 400.0;
+    // Throttle mesh updates: only regenerate if position changed significantly
+    // or if force update is requested (e.g., new file loaded)
+    const UPDATE_THRESHOLD: f32 = 0.5; // Update every 0.5 seconds of playback
 
-    // Only update if mesh update is requested
-    if !waveform.needs_mesh_update {
-        return;
-    }
-
+    // Only update if waveform is loaded
     if !waveform.is_loaded() {
-        waveform.needs_mesh_update = false;
+        if waveform.needs_mesh_update {
+            waveform.needs_mesh_update = false;
+        }
         return;
     }
 
-    let frame_count = waveform.frame_count();
-    let duration_secs = frame_count as f32 / waveform.sample_rate as f32;
-    tracing::info!(
-        "Updating waveform meshes: {} frames ({:.1}s duration)",
-        frame_count,
-        duration_secs
-    );
+    // Get current playback position in seconds
+    let current_position = playback.current_position;
 
-    // Adaptive LOD based on file size
-    // Target ~10k vertices maximum for good performance
-    let target_vertices = 10_000;
-    let sample_stride = (frame_count / target_vertices).max(1);
+    let position_delta = (current_position - waveform.last_mesh_position).abs();
 
-    // Adaptive time scale to fit waveform in visible area
-    // Target 400 units total length (fits well within camera view)
-    let time_scale = if duration_secs > 0.0 {
-        TARGET_LENGTH / duration_secs
-    } else {
-        50.0
-    };
+    if !waveform.needs_mesh_update && position_delta < UPDATE_THRESHOLD {
+        return; // Skip update - position hasn't changed enough
+    }
 
+    // Configuration for scrolling waveform window
     let config = WaveformMeshConfig {
-        sample_stride,
-        time_scale,
-        amplitude_scale: 20.0, // Increased from 10.0 for better visibility
-        base_height: 15.0,     // Elevate waveform walls above the road
+        sample_stride: 20, // Higher stride for better performance with scrolling
+        amplitude_scale: 20.0,
+        base_height: 15.0,
+        window_duration: 15.0, // Show 15 seconds before and after cursor
         ..Default::default()
     };
 
     // Update left channel mesh
     if let Ok((entity, _mesh_handle)) = left_query.single() {
         let left_samples = waveform.left_channel();
-        let mesh = generate_channel_mesh(&left_samples, waveform.sample_rate, &config);
+        let mesh = generate_channel_mesh(
+            &left_samples,
+            waveform.sample_rate,
+            current_position,
+            &config,
+        );
         let new_handle = meshes.add(mesh);
         commands.entity(entity).insert(Mesh3d(new_handle));
-    } else {
-        tracing::warn!("Left wall entity not found");
     }
 
     // Update right channel mesh
     if let Ok((entity, _mesh_handle)) = right_query.single() {
         let right_samples = waveform.right_channel();
-        let mesh = generate_channel_mesh(&right_samples, waveform.sample_rate, &config);
+        let mesh = generate_channel_mesh(
+            &right_samples,
+            waveform.sample_rate,
+            current_position,
+            &config,
+        );
         let new_handle = meshes.add(mesh);
         commands.entity(entity).insert(Mesh3d(new_handle));
-    } else {
-        tracing::warn!("Right wall entity not found");
     }
 
-    // Clear the update flag
+    // Update tracking and clear flags
+    waveform.last_mesh_position = current_position;
     waveform.needs_mesh_update = false;
 }
 
 /// Process audio events from the audio thread
 ///
-/// Reads waveform sample events and updates the `WaveformData` resource
+/// Reads audio events and updates resources
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters must be passed by value
 fn process_audio_events(
     event_channel: Option<ResMut<AudioEventChannel>>,
     mut waveform: ResMut<WaveformData>,
+    mut current_sampler: ResMut<crate::file_loading::CurrentSamplerNode>,
 ) {
     // Early return if audio event channel is not available (e.g., in basic examples)
     let Some(mut channel) = event_channel else {
@@ -208,12 +225,36 @@ fn process_audio_events(
             AudioEvent::Stopped => {
                 tracing::info!("Audio playback stopped");
             }
+            AudioEvent::NodeAdded { node_id } => {
+                tracing::info!("✓ Sampler node added with ID: {node_id}");
+                current_sampler.node_id = Some(node_id);
+            }
+            AudioEvent::NodeRemoved { node_id } => {
+                tracing::info!("✓ Sampler node removed: {node_id}");
+            }
             AudioEvent::Error(msg) => {
                 tracing::error!("Audio error: {}", msg);
             }
-            _ => {
-                // Ignore other events (NodeAdded, PeakLevel, etc.)
+            AudioEvent::PeakLevel { .. } => {
+                // Ignore peak levels for now
             }
         }
+    }
+}
+
+/// Update playback position from waveform data
+///
+/// Converts the frame position from `WaveformData` to seconds in `PlaybackState`
+#[allow(clippy::needless_pass_by_value)] // Bevy system parameters must be passed by value
+fn update_playback_position(
+    waveform: Res<WaveformData>,
+    mut playback: ResMut<crate::playback::PlaybackState>,
+) {
+    // Only update if we have valid sample rate (avoid division by zero)
+    if waveform.sample_rate > 0 {
+        // Convert frame position to seconds
+        // Position is in frames, sample_rate is frames per second
+        let position_seconds = waveform.current_position as f32 / waveform.sample_rate as f32;
+        playback.current_position = position_seconds;
     }
 }

@@ -12,6 +12,7 @@
 //!   Right Mouse + Move - Look around
 //!   Esc - Exit
 
+use vvdaw_comms::create_channels;
 use vvdaw_ui_3d::waveform::WaveformData;
 
 fn main() {
@@ -52,8 +53,11 @@ fn main() {
         }
     };
 
+    // Create communication channels (visualization only - no audio engine)
+    let (ui_channels, _audio_channels) = create_channels(256);
+
     // Create app with loaded waveform data
-    let mut app = vvdaw_ui_3d::create_app();
+    let mut app = vvdaw_ui_3d::create_app(ui_channels);
 
     // Insert the loaded waveform data as a resource
     app.insert_resource(waveform_data);

@@ -137,6 +137,7 @@ impl AudioEngine {
                                 ));
                             } else {
                                 graph.remove_node(node_id);
+                                let _ = channels.event_tx.push(AudioEvent::NodeRemoved { node_id });
                             }
                         }
                         AudioCommand::Connect { from, to } => {

@@ -62,7 +62,7 @@ futures-lite = "2.5"
 
 # Audio utilities
 hound = "3.5"  # WAV file I/O for testing
-dasp = "0.11"  # Sample types and conversions
+dasp = { version = "0.11", features = ["signal", "interpolate", "interpolate-linear"] }  # Sample types, conversions, and resampling
 
 # General utilities
 parking_lot = "0.12"  # When you absolutely need a mutex (rarely)
