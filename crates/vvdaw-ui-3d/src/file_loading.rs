@@ -239,6 +239,23 @@ const ENGINE_SAMPLE_RATE: u32 = 48000;
 fn resample_stereo(stereo_samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
     use dasp::{Signal, interpolate::linear::Linear, signal};
 
+    // Early validation: handle empty input
+    if stereo_samples.is_empty() {
+        debug!("Resample called with empty input, returning empty Vec");
+        return Vec::new();
+    }
+
+    // Early validation: prevent division by zero
+    if source_rate == 0 {
+        error!("Source sample rate is 0, cannot resample");
+        return stereo_samples.to_vec();
+    }
+
+    if target_rate == 0 {
+        error!("Target sample rate is 0, cannot resample");
+        return stereo_samples.to_vec();
+    }
+
     info!(
         "Resampling from {}Hz to {}Hz ({:.1}% speed change)",
         source_rate,
@@ -502,5 +519,62 @@ mod tests {
         // Clear error
         state.clear_error();
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn test_resample_stereo_empty_input() {
+        let result = resample_stereo(&[], 44100, 48000);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_resample_stereo_zero_source_rate() {
+        // Should return input unchanged when source rate is 0 (defensive behavior)
+        let input = vec![0.1, -0.1, 0.2, -0.2];
+        let result = resample_stereo(&input, 0, 48000);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_resample_stereo_zero_target_rate() {
+        // Should return input unchanged when target rate is 0 (defensive behavior)
+        let input = vec![0.1, -0.1, 0.2, -0.2];
+        let result = resample_stereo(&input, 44100, 0);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_resample_stereo_valid_upsampling() {
+        // Test upsampling from 44.1kHz to 48kHz (small sample)
+        let input = vec![0.5, -0.5, 0.3, -0.3]; // 2 stereo frames
+        let result = resample_stereo(&input, 44100, 48000);
+
+        // Should have more frames after upsampling (44.1 -> 48 is ~8.8% increase)
+        // 2 frames * (48000/44100) ≈ 2.18 frames → ceil to 3 frames = 6 samples
+        assert!(!result.is_empty());
+        assert!(result.len() >= input.len());
+    }
+
+    #[test]
+    fn test_resample_stereo_valid_downsampling() {
+        // Test downsampling from 48kHz to 44.1kHz (small sample)
+        let input = vec![0.5, -0.5, 0.3, -0.3, 0.1, -0.1]; // 3 stereo frames
+        let result = resample_stereo(&input, 48000, 44100);
+
+        // Should have fewer frames after downsampling (48 -> 44.1 is ~8.2% decrease)
+        // 3 frames * (44100/48000) ≈ 2.75 frames → ceil to 3 frames = 6 samples
+        assert!(!result.is_empty());
+        assert!(result.len() <= input.len() + 2); // Allow small rounding difference
+    }
+
+    #[test]
+    fn test_resample_stereo_same_rate() {
+        // When source and target rates are the same, should be close to input
+        let input = vec![0.5, -0.5, 0.3, -0.3];
+        let result = resample_stereo(&input, 48000, 48000);
+
+        // Should have similar length (may differ slightly due to interpolation)
+        assert!(!result.is_empty());
+        assert!((result.len() as i32 - input.len() as i32).abs() <= 2);
     }
 }
