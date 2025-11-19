@@ -61,6 +61,7 @@ vvdaw-plugin.workspace = true
 
 # UI
 bevy_egui.workspace = true
+leafwing-input-manager.workspace = true
 
 # File I/O
 hound.workspace = true
