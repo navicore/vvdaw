@@ -66,7 +66,42 @@ impl Plugin for Highway3dPlugin {
             .add_plugins(highway::HighwayPlugin)
             .add_plugins(menu::MenuPlugin)
             .add_plugins(playback::PlaybackPlugin)
-            .add_plugins(file_loading::FileLoadingPlugin);
+            .add_plugins(file_loading::FileLoadingPlugin)
+            // Add cleanup system for graceful shutdown
+            .add_systems(Last, cleanup_on_exit);
+    }
+}
+
+/// System to handle graceful shutdown when AppExit is triggered
+///
+/// AGGRESSIVE EXIT STRATEGY:
+/// Due to potential deadlocks with audio threads and egui when paused,
+/// we use std::process::exit() to force immediate termination.
+///
+/// This is not ideal but prevents the app from hanging indefinitely.
+/// The audio thread and all resources will be cleaned up by the OS.
+fn cleanup_on_exit(
+    mut exit_events: MessageReader<AppExit>,
+    mut audio_command_tx: Option<ResMut<AudioCommandChannel>>,
+) {
+    // Check if we're exiting
+    if exit_events.read().next().is_some() {
+        tracing::info!("App exit detected - forcing immediate shutdown");
+
+        // Try to stop audio gracefully first
+        if let Some(tx) = &mut audio_command_tx {
+            let _ = tx.0.push(vvdaw_comms::AudioCommand::Stop);
+        }
+
+        // Give audio thread a tiny moment to process stop command
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        tracing::info!("Forcing process exit to avoid potential deadlock");
+
+        // AGGRESSIVE: Force immediate process termination
+        // The OS will clean up all resources (audio threads, file handles, etc.)
+        // This prevents hanging when the audio thread or egui is blocked
+        std::process::exit(0);
     }
 }
 

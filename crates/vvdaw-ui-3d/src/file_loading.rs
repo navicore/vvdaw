@@ -233,7 +233,25 @@ fn poll_file_load_system(
 }
 
 /// Target sample rate for the audio engine
-const ENGINE_SAMPLE_RATE: u32 = 48000;
+///
+/// ⚠️ IMPORTANT: This is a hardcoded assumption that may not match the actual
+/// audio device sample rate!
+///
+/// ISSUE: The audio engine (vvdaw-audio/src/engine.rs) now queries the device's
+/// actual sample rate and uses that instead of forcing 48kHz. However, the UI code
+/// doesn't know what rate the engine is actually using.
+///
+/// SYMPTOMS: If device runs at 44.1kHz but we resample to 48kHz here, audio will
+/// be pitched down by ~8% (48000/44100 = ~1.088x slower).
+///
+/// TODO: Architecture fix needed:
+/// 1. Audio engine should report its actual sample rate via an AudioEvent
+/// 2. UI should store that rate in a Resource
+/// 3. File loading should use the actual engine rate, not this constant
+///
+/// TEMPORARY WORKAROUND: Set this to match your device's sample rate
+/// Your MacBook Pro Speakers run at 44100Hz (see logs above)
+const ENGINE_SAMPLE_RATE: u32 = 44100;  // Changed from 48000 to match device
 
 /// Resample stereo audio from one sample rate to another using linear interpolation
 fn resample_stereo(stereo_samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {

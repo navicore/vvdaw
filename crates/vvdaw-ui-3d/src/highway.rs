@@ -135,7 +135,7 @@ fn update_waveform_meshes(
 ) {
     // Throttle mesh updates: only regenerate if position changed significantly
     // or if force update is requested (e.g., new file loaded)
-    const UPDATE_THRESHOLD: f32 = 0.5; // Update every 0.5 seconds of playback
+    const UPDATE_THRESHOLD: f32 = 0.1; // Update every 0.1 seconds of playback
 
     // Only update if waveform is loaded
     if !waveform.is_loaded() {
