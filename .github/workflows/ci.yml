@@ -41,6 +41,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config
+
       - name: Link VST3 SDK
         run: |
           mkdir -p vendor
@@ -64,6 +72,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config
 
       - name: Link VST3 SDK
         run: |
@@ -89,6 +105,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config
 
       - name: Link VST3 SDK
         run: |
