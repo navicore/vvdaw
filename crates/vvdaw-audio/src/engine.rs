@@ -72,9 +72,18 @@ impl AudioEngine {
 
         // Send EngineInitialized event to UI with actual sample rate
         // This must happen BEFORE channels is moved into the audio callback closure
-        let _ = channels.event_tx.push(AudioEvent::EngineInitialized {
-            sample_rate: actual_sample_rate,
-        });
+        if channels
+            .event_tx
+            .push(AudioEvent::EngineInitialized {
+                sample_rate: actual_sample_rate,
+            })
+            .is_err()
+        {
+            tracing::error!(
+                "Failed to send EngineInitialized event - UI may use wrong sample rate ({}Hz)!",
+                actual_sample_rate
+            );
+        }
 
         // Create the audio graph with proper configuration
         let mut graph = AudioGraph::with_config(config.sample_rate.0, self.config.block_size);
