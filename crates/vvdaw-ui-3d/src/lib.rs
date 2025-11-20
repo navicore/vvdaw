@@ -91,12 +91,33 @@ impl Plugin for Highway3dPlugin {
 
 /// System to handle graceful shutdown when `AppExit` is triggered
 ///
-/// AGGRESSIVE EXIT STRATEGY:
-/// Due to potential deadlocks with audio threads and egui when paused,
-/// we use `std::process::exit()` to force immediate termination.
+/// ## TEMPORARY WORKAROUND - NOT PRODUCTION QUALITY
 ///
-/// This is not ideal but prevents the app from hanging indefinitely.
-/// The audio thread and all resources will be cleaned up by the OS.
+/// This function uses `std::process::exit(0)` to force immediate termination,
+/// which is **problematic** because:
+/// - Bypasses all destructors and Drop implementations
+/// - Audio devices may not be properly released
+/// - File handles and resources are not cleaned up gracefully
+/// - Masks the underlying deadlock/hang issue
+///
+/// ### Why This Exists
+/// Without forced exit, the application hangs on shutdown when:
+/// 1. Audio thread is in a blocking state
+/// 2. egui has locks that prevent clean shutdown
+/// 3. Bevy's shutdown sequence deadlocks with audio callback
+///
+/// ### TODO: Proper Fix Required
+/// This is a temporary workaround. The proper solution requires:
+/// 1. **Investigate root cause** - Why does shutdown hang without forced exit?
+/// 2. **Add timeouts** - Audio thread joins should timeout, not block forever
+/// 3. **Interruptible audio** - Audio callback must respect shutdown signals
+/// 4. **Proper coordination** - Bevy/egui/audio should coordinate shutdown order
+/// 5. **Test shutdown** - Add automated tests that verify clean shutdown
+///
+/// See: <https://github.com/navicore/vvdaw/pull/26/> (reviewer rated this 8/10 severity)
+///
+/// Until fixed, this allows users to exit the application without killing the process,
+/// relying on the OS to clean up resources.
 fn cleanup_on_exit(
     mut exit_events: MessageReader<AppExit>,
     mut audio_command_tx: Option<ResMut<AudioCommandChannel>>,
@@ -111,13 +132,16 @@ fn cleanup_on_exit(
         }
 
         // Give audio thread a tiny moment to process stop command
+        // TODO: This should be a proper wait with timeout, not a sleep
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        tracing::info!("Forcing process exit to avoid potential deadlock");
+        tracing::warn!(
+            "Using std::process::exit() - see cleanup_on_exit documentation for why this is temporary"
+        );
 
-        // AGGRESSIVE: Force immediate process termination
+        // TEMPORARY WORKAROUND: Force immediate process termination
         // The OS will clean up all resources (audio threads, file handles, etc.)
-        // This prevents hanging when the audio thread or egui is blocked
+        // This prevents hanging but is not the correct long-term solution
         std::process::exit(0);
     }
 }

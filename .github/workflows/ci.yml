@@ -130,11 +130,11 @@ jobs:
       - name: Build release
         run: just build-release
 
-  # macOS CI (only on releases to save time)
+  # macOS CI (only on merge to main to save time)
   macos-ci:
     name: macOS CI
     runs-on: macos-latest
-    if: github.event_name == 'release'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
