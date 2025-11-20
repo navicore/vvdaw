@@ -228,7 +228,7 @@ fn process_audio_events(
             }
             AudioEvent::EngineInitialized { sample_rate } => {
                 tracing::info!("✓ Audio engine initialized at {}Hz", sample_rate);
-                engine_info.sample_rate = sample_rate;
+                engine_info.sample_rate = Some(sample_rate);
             }
             AudioEvent::NodeAdded { node_id } => {
                 tracing::info!("✓ Sampler node added with ID: {node_id}");

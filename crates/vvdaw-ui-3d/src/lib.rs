@@ -59,22 +59,13 @@ impl Resource for AudioPluginChannel {}
 ///
 /// UI systems can use this to know what sample rate to resample imported
 /// audio files to, ensuring they match the engine's actual rate.
-#[derive(Resource, Debug, Clone)]
+#[derive(Resource, Debug, Clone, Default)]
 pub struct AudioEngineInfo {
     /// The actual sample rate the audio engine is running at
     ///
-    /// This is initialized to a default value and updated when the
-    /// `EngineInitialized` event is received.
-    pub sample_rate: u32,
-}
-
-impl Default for AudioEngineInfo {
-    fn default() -> Self {
-        Self {
-            // Default to 48kHz - will be updated when engine initializes
-            sample_rate: 48000,
-        }
-    }
+    /// `None` until the `EngineInitialized` event is received.
+    /// File loading should wait for this to be `Some` before proceeding.
+    pub sample_rate: Option<u32>,
 }
 
 /// Plugin that sets up the 3D highway UI

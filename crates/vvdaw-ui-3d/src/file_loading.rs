@@ -97,7 +97,14 @@ fn start_file_load_system(
         loading_state.start_loading();
 
         // Capture engine sample rate to pass to background thread
-        let target_sample_rate = engine_info.sample_rate;
+        // Wait for engine initialization before loading files
+        let Some(target_sample_rate) = engine_info.sample_rate else {
+            warn!("Audio engine not yet initialized, deferring file load");
+            loading_state.fail_with_error(
+                "Audio engine not ready. Please wait a moment and try again.".to_string(),
+            );
+            continue;
+        };
 
         // Spawn background thread to load file
         let task = std::thread::spawn(move || load_wav_file(&path, target_sample_rate));
