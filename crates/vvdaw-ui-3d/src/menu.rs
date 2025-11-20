@@ -63,6 +63,7 @@ fn menu_bar_system(
 
                 if ui.button("Exit").clicked() {
                     app_exit.write(AppExit::Success);
+                    ui.close();
                 }
             });
 

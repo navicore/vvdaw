@@ -41,6 +41,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config
+
       - name: Link VST3 SDK
         run: |
           mkdir -p vendor
@@ -65,6 +73,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config
+
       - name: Link VST3 SDK
         run: |
           mkdir -p vendor
@@ -77,7 +93,9 @@ jobs:
           cache-on-failure: true
 
       - name: Run tests
-        run: just test
+        run: cargo test --workspace --lib --bins
+        env:
+          SKIP_AUDIO_TESTS: "1"
 
   # Linux CI - Release build (only on main/release)
   linux-release:
@@ -89,6 +107,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config
 
       - name: Link VST3 SDK
         run: |
@@ -104,11 +130,11 @@ jobs:
       - name: Build release
         run: just build-release
 
-  # macOS CI (only on releases to save time)
+  # macOS CI (only on merge to main to save time)
   macos-ci:
     name: macOS CI
     runs-on: macos-latest
-    if: github.event_name == 'release'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

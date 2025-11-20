@@ -23,6 +23,7 @@ impl Plugin for PlaybackPlugin {
 pub enum PlaybackAction {
     Toggle,
     Stop,
+    Exit,
 }
 
 /// Marker component for playback controller
@@ -76,6 +77,7 @@ fn setup_playback_input(mut commands: Commands) {
     let input_map = InputMap::new([
         (PlaybackAction::Toggle, KeyCode::Space),
         (PlaybackAction::Stop, KeyCode::KeyX),
+        (PlaybackAction::Exit, KeyCode::Escape),
     ]);
 
     commands.spawn((PlaybackController, input_map));
@@ -85,7 +87,8 @@ fn setup_playback_input(mut commands: Commands) {
 #[allow(clippy::needless_pass_by_value)]
 fn keyboard_input_system(
     query: Query<&ActionState<PlaybackAction>, With<PlaybackController>>,
-    mut commands: MessageWriter<PlaybackCommand>,
+    mut playback_commands: MessageWriter<PlaybackCommand>,
+    mut app_exit: MessageWriter<AppExit>,
 ) {
     let Ok(action_state) = query.single() else {
         return;
@@ -93,12 +96,18 @@ fn keyboard_input_system(
 
     // Space: Toggle play/pause
     if action_state.just_pressed(&PlaybackAction::Toggle) {
-        commands.write(PlaybackCommand::Toggle);
+        playback_commands.write(PlaybackCommand::Toggle);
     }
 
     // X: Stop
     if action_state.just_pressed(&PlaybackAction::Stop) {
-        commands.write(PlaybackCommand::Stop);
+        playback_commands.write(PlaybackCommand::Stop);
+    }
+
+    // Esc: Exit application
+    if action_state.just_pressed(&PlaybackAction::Exit) {
+        info!("Escape pressed - exiting application");
+        app_exit.write(AppExit::Success);
     }
 }
 

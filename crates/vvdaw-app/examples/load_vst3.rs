@@ -127,6 +127,9 @@ fn main() -> Result<()> {
                 AudioEvent::Stopped => {
                     println!("→ Audio processing STOPPED");
                 }
+                AudioEvent::EngineInitialized { sample_rate } => {
+                    println!("→ Audio engine initialized at {sample_rate}Hz");
+                }
                 AudioEvent::PeakLevel { channel, level } => {
                     peak_count += 1;
                     if peak_count % 100 == 0 {

@@ -76,10 +76,12 @@ struct LoadedAudio {
 }
 
 /// System that starts loading a file when selected
+#[allow(clippy::needless_pass_by_value)] // Bevy MessageReader requires by-value
 fn start_file_load_system(
     mut file_events: MessageReader<FileSelected>,
     mut load_task: ResMut<FileLoadTask>,
     mut loading_state: ResMut<FileLoadingState>,
+    engine_info: Res<crate::AudioEngineInfo>,
 ) {
     for event in file_events.read() {
         // Check if a load is already in progress
@@ -94,8 +96,18 @@ fn start_file_load_system(
         // Update loading state
         loading_state.start_loading();
 
+        // Capture engine sample rate to pass to background thread
+        // Wait for engine initialization before loading files
+        let Some(target_sample_rate) = engine_info.sample_rate else {
+            warn!("Audio engine not yet initialized, deferring file load");
+            loading_state.fail_with_error(
+                "Audio engine not ready. Please wait a moment and try again.".to_string(),
+            );
+            continue;
+        };
+
         // Spawn background thread to load file
-        let task = std::thread::spawn(move || load_wav_file(&path));
+        let task = std::thread::spawn(move || load_wav_file(&path, target_sample_rate));
         load_task.pending = Some(task);
     }
 }
@@ -232,9 +244,6 @@ fn poll_file_load_system(
     }
 }
 
-/// Target sample rate for the audio engine
-const ENGINE_SAMPLE_RATE: u32 = 48000;
-
 /// Resample stereo audio from one sample rate to another using linear interpolation
 fn resample_stereo(stereo_samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
     use dasp::{Signal, interpolate::linear::Linear, signal};
@@ -305,7 +314,7 @@ fn resample_stereo(stereo_samples: &[f32], source_rate: u32, target_rate: u32) -
 }
 
 /// Load a WAV file and return audio data
-fn load_wav_file(path: &Path) -> Result<LoadedAudio, String> {
+fn load_wav_file(path: &Path, target_sample_rate: u32) -> Result<LoadedAudio, String> {
     use std::fs;
 
     // Validate file size (500MB limit)
@@ -413,11 +422,11 @@ fn load_wav_file(path: &Path) -> Result<LoadedAudio, String> {
     };
 
     // Resample to engine sample rate if needed (load-time resampling)
-    let (final_samples, final_sample_rate) = if sample_rate == ENGINE_SAMPLE_RATE {
+    let (final_samples, final_sample_rate) = if sample_rate == target_sample_rate {
         (stereo_samples, sample_rate)
     } else {
-        let resampled = resample_stereo(&stereo_samples, sample_rate, ENGINE_SAMPLE_RATE);
-        (resampled, ENGINE_SAMPLE_RATE)
+        let resampled = resample_stereo(&stereo_samples, sample_rate, target_sample_rate);
+        (resampled, target_sample_rate)
     };
 
     Ok(LoadedAudio {
@@ -434,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_load_wav_nonexistent_file() {
-        let result = load_wav_file(Path::new("/nonexistent/file.wav"));
+        let result = load_wav_file(Path::new("/nonexistent/file.wav"), 48000);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("File not found"));
     }
@@ -446,7 +455,7 @@ mod tests {
         let test_file = temp_dir.join("test_invalid.txt");
         fs::write(&test_file, b"not a wav file").unwrap();
 
-        let result = load_wav_file(&test_file);
+        let result = load_wav_file(&test_file, 48000);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid file extension"));
 
@@ -457,7 +466,7 @@ mod tests {
     #[test]
     fn test_load_wav_directory_not_file() {
         let temp_dir = std::env::temp_dir();
-        let result = load_wav_file(&temp_dir);
+        let result = load_wav_file(&temp_dir, 48000);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Path is not a file"));
     }
@@ -466,7 +475,7 @@ mod tests {
     fn test_load_wav_path_traversal_prevention() {
         // Attempting to load a file with path traversal should fail safely
         // The canonicalize step will resolve ../ and prevent traversal
-        let result = load_wav_file(Path::new("../../etc/passwd"));
+        let result = load_wav_file(Path::new("../../etc/passwd"), 48000);
         // Should fail because file doesn't exist or isn't a .wav
         assert!(result.is_err());
     }
@@ -477,7 +486,7 @@ mod tests {
         let test_file = temp_dir.join("test_no_extension");
         fs::write(&test_file, b"data").unwrap();
 
-        let result = load_wav_file(&test_file);
+        let result = load_wav_file(&test_file, 48000);
         assert!(result.is_err());
         assert!(
             result

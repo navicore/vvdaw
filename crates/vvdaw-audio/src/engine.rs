@@ -37,14 +37,53 @@ impl AudioEngine {
             .context("No output device available")?;
         tracing::info!("Using output device: {}", device.name()?);
 
-        // Configure the output stream
+        // Get the device's default config to see what sample rate it actually supports
+        let device_config = device
+            .default_output_config()
+            .context("Failed to get default output config")?;
+        let device_sample_rate = device_config.sample_rate().0;
+
+        tracing::info!(
+            "Device default sample rate: {}Hz (requested: {}Hz)",
+            device_sample_rate,
+            self.config.sample_rate
+        );
+
+        // Use the device's sample rate if it differs from our request
+        let actual_sample_rate = if device_sample_rate == self.config.sample_rate {
+            self.config.sample_rate
+        } else {
+            tracing::warn!(
+                "Using device sample rate {}Hz instead of requested {}Hz to avoid resampling issues",
+                device_sample_rate,
+                self.config.sample_rate
+            );
+            device_sample_rate
+        };
+
+        // Configure the output stream with the actual sample rate
         let config = cpal::StreamConfig {
             channels: self.config.output_channels as u16,
-            sample_rate: cpal::SampleRate(self.config.sample_rate),
+            sample_rate: cpal::SampleRate(actual_sample_rate),
             buffer_size: cpal::BufferSize::Fixed(self.config.block_size as u32),
         };
 
-        tracing::debug!("Stream config: {:?}", config);
+        tracing::info!("Final stream config: {:?}", config);
+
+        // Send EngineInitialized event to UI with actual sample rate
+        // This must happen BEFORE channels is moved into the audio callback closure
+        if channels
+            .event_tx
+            .push(AudioEvent::EngineInitialized {
+                sample_rate: actual_sample_rate,
+            })
+            .is_err()
+        {
+            tracing::error!(
+                "Failed to send EngineInitialized event - UI may use wrong sample rate ({}Hz)!",
+                actual_sample_rate
+            );
+        }
 
         // Create the audio graph with proper configuration
         let mut graph = AudioGraph::with_config(config.sample_rate.0, self.config.block_size);

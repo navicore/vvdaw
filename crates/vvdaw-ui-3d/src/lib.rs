@@ -52,6 +52,22 @@ pub struct AudioPluginChannel(pub crossbeam_channel::Sender<vvdaw_comms::PluginI
 // crossbeam_channel::Sender already implements Send + Sync, so no manual impl needed
 impl Resource for AudioPluginChannel {}
 
+/// Resource containing information about the audio engine
+///
+/// This stores the actual sample rate the audio engine is running at,
+/// which is reported via the `AudioEvent::EngineInitialized` event.
+///
+/// UI systems can use this to know what sample rate to resample imported
+/// audio files to, ensuring they match the engine's actual rate.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct AudioEngineInfo {
+    /// The actual sample rate the audio engine is running at
+    ///
+    /// `None` until the `EngineInitialized` event is received.
+    /// File loading should wait for this to be `Some` before proceeding.
+    pub sample_rate: Option<u32>,
+}
+
 /// Plugin that sets up the 3D highway UI
 pub struct Highway3dPlugin;
 
@@ -59,6 +75,7 @@ impl Plugin for Highway3dPlugin {
     fn build(&self, app: &mut App) {
         app
             // Initialize resources
+            .init_resource::<AudioEngineInfo>()
             .init_resource::<waveform::WaveformData>()
             // Add our custom plugins
             .add_plugins(scene::ScenePlugin)
@@ -66,7 +83,66 @@ impl Plugin for Highway3dPlugin {
             .add_plugins(highway::HighwayPlugin)
             .add_plugins(menu::MenuPlugin)
             .add_plugins(playback::PlaybackPlugin)
-            .add_plugins(file_loading::FileLoadingPlugin);
+            .add_plugins(file_loading::FileLoadingPlugin)
+            // Add cleanup system for graceful shutdown
+            .add_systems(Last, cleanup_on_exit);
+    }
+}
+
+/// System to handle graceful shutdown when `AppExit` is triggered
+///
+/// ## TEMPORARY WORKAROUND - NOT PRODUCTION QUALITY
+///
+/// This function uses `std::process::exit(0)` to force immediate termination,
+/// which is **problematic** because:
+/// - Bypasses all destructors and Drop implementations
+/// - Audio devices may not be properly released
+/// - File handles and resources are not cleaned up gracefully
+/// - Masks the underlying deadlock/hang issue
+///
+/// ### Why This Exists
+/// Without forced exit, the application hangs on shutdown when:
+/// 1. Audio thread is in a blocking state
+/// 2. egui has locks that prevent clean shutdown
+/// 3. Bevy's shutdown sequence deadlocks with audio callback
+///
+/// ### TODO: Proper Fix Required
+/// This is a temporary workaround. The proper solution requires:
+/// 1. **Investigate root cause** - Why does shutdown hang without forced exit?
+/// 2. **Add timeouts** - Audio thread joins should timeout, not block forever
+/// 3. **Interruptible audio** - Audio callback must respect shutdown signals
+/// 4. **Proper coordination** - Bevy/egui/audio should coordinate shutdown order
+/// 5. **Test shutdown** - Add automated tests that verify clean shutdown
+///
+/// See: <https://github.com/navicore/vvdaw/pull/26/> (reviewer rated this 8/10 severity)
+///
+/// Until fixed, this allows users to exit the application without killing the process,
+/// relying on the OS to clean up resources.
+fn cleanup_on_exit(
+    mut exit_events: MessageReader<AppExit>,
+    mut audio_command_tx: Option<ResMut<AudioCommandChannel>>,
+) {
+    // Check if we're exiting
+    if exit_events.read().next().is_some() {
+        tracing::info!("App exit detected - forcing immediate shutdown");
+
+        // Try to stop audio gracefully first
+        if let Some(tx) = &mut audio_command_tx {
+            let _ = tx.0.push(vvdaw_comms::AudioCommand::Stop);
+        }
+
+        // Give audio thread a tiny moment to process stop command
+        // TODO: This should be a proper wait with timeout, not a sleep
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        tracing::warn!(
+            "Using std::process::exit() - see cleanup_on_exit documentation for why this is temporary"
+        );
+
+        // TEMPORARY WORKAROUND: Force immediate process termination
+        // The OS will clean up all resources (audio threads, file handles, etc.)
+        // This prevents hanging but is not the correct long-term solution
+        std::process::exit(0);
     }
 }
 
