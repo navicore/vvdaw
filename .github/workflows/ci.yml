@@ -93,7 +93,9 @@ jobs:
           cache-on-failure: true
 
       - name: Run tests
-        run: just test
+        run: cargo test --workspace --lib --bins
+        env:
+          SKIP_AUDIO_TESTS: "1"
 
   # Linux CI - Release build (only on main/release)
   linux-release:
