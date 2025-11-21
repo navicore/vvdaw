@@ -88,6 +88,8 @@ fn setup_highway(
     // Meshes will be generated when waveform data is loaded
 
     // Left channel wall (placeholder) - bright green
+    // Position at edge of road (ROAD_WIDTH is half_size, so full width is 2*ROAD_WIDTH)
+    // Offset by half the waveform width so inner edge aligns with road edge
     commands.spawn((
         Mesh3d(meshes.add(Mesh::new(
             PrimitiveTopology::TriangleList,
@@ -99,11 +101,13 @@ fn setup_highway(
             perceptual_roughness: 1.0,
             ..default()
         })),
-        Transform::from_xyz(-ROAD_WIDTH / 2.0, 0.0, 0.0),
+        Transform::from_xyz(-ROAD_WIDTH - 0.25, 0.0, 0.0), // -20.25 for waveform width 0.5
         LeftWall,
     ));
 
     // Right channel wall (placeholder) - bright red
+    // Position at edge of road (ROAD_WIDTH is half_size, so full width is 2*ROAD_WIDTH)
+    // Offset by half the waveform width so inner edge aligns with road edge
     commands.spawn((
         Mesh3d(meshes.add(Mesh::new(
             PrimitiveTopology::TriangleList,
@@ -115,7 +119,7 @@ fn setup_highway(
             perceptual_roughness: 1.0,
             ..default()
         })),
-        Transform::from_xyz(ROAD_WIDTH / 2.0, 0.0, 0.0),
+        Transform::from_xyz(ROAD_WIDTH + 0.25, 0.0, 0.0), // 20.25 for waveform width 0.5
         RightWall,
     ));
 }
