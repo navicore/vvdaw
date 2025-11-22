@@ -8,6 +8,8 @@
 use bevy::light::CascadeShadowConfigBuilder;
 use bevy::prelude::*;
 
+use crate::highway::ROAD_LENGTH;
+
 pub struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
@@ -43,7 +45,7 @@ fn setup_scene(mut commands: Commands) {
         // Configure shadow cascades for our highway scene
         CascadeShadowConfigBuilder {
             first_cascade_far_bound: 50.0, // First cascade covers near highway
-            maximum_distance: 500.0,       // Match ROAD_LENGTH
+            maximum_distance: ROAD_LENGTH,  // Match highway length
             ..default()
         }
         .build(),

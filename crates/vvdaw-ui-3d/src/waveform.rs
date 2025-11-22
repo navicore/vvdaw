@@ -244,6 +244,34 @@ fn add_edge_quad(
     ]);
 }
 
+/// Calculate normal for a quad from its vertex positions
+///
+/// Uses cross product of two edge vectors to compute the face normal.
+/// The normal is normalized to unit length for proper lighting calculations.
+fn calculate_quad_normal(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> [f32; 3] {
+    // Calculate two edge vectors
+    let edge1 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+    let edge2 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+
+    // Cross product: edge1 × edge2
+    let normal = [
+        edge1[1].mul_add(edge2[2], -(edge1[2] * edge2[1])),
+        edge1[2].mul_add(edge2[0], -(edge1[0] * edge2[2])),
+        edge1[0].mul_add(edge2[1], -(edge1[1] * edge2[0])),
+    ];
+
+    // Normalize to unit length
+    let length = normal[0]
+        .mul_add(normal[0], normal[1].mul_add(normal[1], normal[2] * normal[2]))
+        .sqrt();
+    if length > 0.0001 {
+        [normal[0] / length, normal[1] / length, normal[2] / length]
+    } else {
+        // Fallback for degenerate quad (shouldn't happen in practice)
+        [0.0, 1.0, 0.0]
+    }
+}
+
 /// Generate separate meshes for base wall and waveform relief
 ///
 /// Returns (`base_wall_mesh`, `waveform_mesh`) as separate meshes that can have different materials.
@@ -442,16 +470,16 @@ fn generate_waveform_mesh(
         // Waveform extrudes toward road center (inner face)
         // Left wall: inner face at +half_thickness, extrude toward +X (road center)
         // Right wall: inner face at -half_thickness, extrude toward -X (road center)
-        let (x_base, x_extruded, wave_normal) = if is_left_wall {
+        let (x_base, x_extruded) = if is_left_wall {
             // Left wall: positioned at negative X, so +half_thickness is the inner face
             let base = half_thickness;
             let extruded = base + config.waveform_extrusion;
-            (base, extruded, [1.0, 0.0, 0.0]) // Normal points toward road center (+X)
+            (base, extruded)
         } else {
             // Right wall: positioned at positive X, so -half_thickness is the inner face
             let base = -half_thickness;
             let extruded = base - config.waveform_extrusion;
-            (base, extruded, [-1.0, 0.0, 0.0]) // Normal points toward road center (-X)
+            (base, extruded)
         };
 
         if let (Some(prev_z_val), Some(prev_y_val)) = (prev_z, prev_y_wave) {
@@ -459,13 +487,15 @@ fn generate_waveform_mesh(
             let wave_start_idx = positions.len() as u32;
 
             // Four vertices for the waveform quad
-            positions.extend_from_slice(&[
-                [x_base, prev_y_val, prev_z_val],     // Previous on base
-                [x_extruded, prev_y_val, prev_z_val], // Previous extruded
-                [x_base, y_wave, z],                  // Current on base
-                [x_extruded, y_wave, z],              // Current extruded
-            ]);
+            let v0 = [x_base, prev_y_val, prev_z_val]; // Previous on base
+            let v1 = [x_extruded, prev_y_val, prev_z_val]; // Previous extruded
+            let v2 = [x_base, y_wave, z]; // Current on base
+            let v3 = [x_extruded, y_wave, z]; // Current extruded
 
+            positions.extend_from_slice(&[v0, v1, v2, v3]);
+
+            // Calculate proper normal from quad geometry
+            let wave_normal = calculate_quad_normal(v0, v1, v2);
             normals.extend_from_slice(&[wave_normal, wave_normal, wave_normal, wave_normal]);
 
             // Tangents for the quad (Z direction along wall, w=1.0 for handedness)

@@ -68,7 +68,11 @@ struct RightWallBase;
 #[derive(Component)]
 struct RightWaveform;
 
-/// Type alias for the complex wall query
+/// Query for all wall entities (base walls and waveforms for both channels)
+///
+/// This type alias simplifies the function signature for `update_waveform_meshes`.
+/// Each entity will have exactly one of the four marker components, allowing us to
+/// identify which mesh type to generate and apply.
 type WallQuery<'w, 's> = Query<
     'w,
     's,
@@ -84,7 +88,13 @@ type WallQuery<'w, 's> = Query<
 
 /// Highway visual configuration
 const ROAD_WIDTH: f32 = 20.0;
-const ROAD_LENGTH: f32 = 500.0;
+pub const ROAD_LENGTH: f32 = 500.0;
+
+/// Material color constants
+const ASPHALT_COLOR: Color = Color::srgb(0.25, 0.25, 0.27);
+const CONCRETE_BASE_COLOR: Color = Color::srgb(0.35, 0.35, 0.37);
+const WAVEFORM_TEAL_COLOR: Color = Color::srgb(0.2, 0.8, 0.7);
+const WAVEFORM_AMBER_COLOR: Color = Color::srgb(1.0, 0.6, 0.2);
 
 /// Setup the highway geometry (road + placeholder walls)
 fn setup_highway(
@@ -95,7 +105,7 @@ fn setup_highway(
     // Road surface - asphalt
     let road_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::new(ROAD_WIDTH, ROAD_LENGTH)));
     let road_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.25, 0.25, 0.27), // Medium-dark gray asphalt (brighter for PBR)
+        base_color: ASPHALT_COLOR,
         metallic: 0.0,
         perceptual_roughness: 0.85, // Rough asphalt surface
         ..default()
@@ -116,7 +126,7 @@ fn setup_highway(
 
     // Base wall material - concrete (brighter for better light response)
     let base_wall_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.35, 0.35, 0.37), // Medium gray concrete (brighter for PBR)
+        base_color: CONCRETE_BASE_COLOR,
         metallic: 0.0,
         perceptual_roughness: 0.7, // Painted concrete feel
         ..default()
@@ -141,7 +151,7 @@ fn setup_highway(
             RenderAssetUsages::RENDER_WORLD,
         ))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.2, 0.8, 0.7), // Bright industrial teal
+            base_color: WAVEFORM_TEAL_COLOR,
             metallic: 0.0,
             perceptual_roughness: 0.3, // Smoother than base wall
             emissive: bevy::color::LinearRgba::rgb(0.0, 0.5, 0.4), // Stronger teal glow for visibility
@@ -171,7 +181,7 @@ fn setup_highway(
             RenderAssetUsages::RENDER_WORLD,
         ))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.6, 0.2), // Bright industrial amber
+            base_color: WAVEFORM_AMBER_COLOR,
             metallic: 0.0,
             perceptual_roughness: 0.3, // Smoother than base wall
             emissive: bevy::color::LinearRgba::rgb(0.6, 0.3, 0.0), // Stronger amber glow for visibility
@@ -225,44 +235,50 @@ fn update_waveform_meshes(
         ..Default::default()
     };
 
-    // Update left channel meshes
+    // Generate meshes once and cache them
     let left_samples = waveform.left_channel();
+    let right_samples = waveform.right_channel();
+
     let (left_base_mesh, left_wave_mesh) = generate_channel_meshes(
         &left_samples,
         waveform.sample_rate,
         current_position,
         &config,
-        true, // is_left_wall = true
+        true,
     );
 
-    // Update right channel meshes
-    let right_samples = waveform.right_channel();
     let (right_base_mesh, right_wave_mesh) = generate_channel_meshes(
         &right_samples,
         waveform.sample_rate,
         current_position,
         &config,
-        false, // is_left_wall = false
+        false,
     );
 
-    // Update all wall meshes using combined query
+    // Add meshes to asset storage once
+    let left_base_handle = meshes.add(left_base_mesh);
+    let left_wave_handle = meshes.add(left_wave_mesh);
+    let right_base_handle = meshes.add(right_base_mesh);
+    let right_wave_handle = meshes.add(right_wave_mesh);
+
+    // Update entities with pre-generated mesh handles
     for (entity, _, left_base, left_wave, right_base, right_wave) in &wall_query {
         if left_base.is_some() {
             commands
                 .entity(entity)
-                .insert(Mesh3d(meshes.add(left_base_mesh.clone())));
+                .insert(Mesh3d(left_base_handle.clone()));
         } else if left_wave.is_some() {
             commands
                 .entity(entity)
-                .insert(Mesh3d(meshes.add(left_wave_mesh.clone())));
+                .insert(Mesh3d(left_wave_handle.clone()));
         } else if right_base.is_some() {
             commands
                 .entity(entity)
-                .insert(Mesh3d(meshes.add(right_base_mesh.clone())));
+                .insert(Mesh3d(right_base_handle.clone()));
         } else if right_wave.is_some() {
             commands
                 .entity(entity)
-                .insert(Mesh3d(meshes.add(right_wave_mesh.clone())));
+                .insert(Mesh3d(right_wave_handle.clone()));
         }
     }
 
