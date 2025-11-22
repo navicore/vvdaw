@@ -45,7 +45,7 @@ fn setup_scene(mut commands: Commands) {
         // Configure shadow cascades for our highway scene
         CascadeShadowConfigBuilder {
             first_cascade_far_bound: 50.0, // First cascade covers near highway
-            maximum_distance: ROAD_LENGTH,  // Match highway length
+            maximum_distance: ROAD_LENGTH, // Match highway length
             ..default()
         }
         .build(),

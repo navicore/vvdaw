@@ -262,7 +262,10 @@ fn calculate_quad_normal(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> [f32; 3] {
 
     // Normalize to unit length
     let length = normal[0]
-        .mul_add(normal[0], normal[1].mul_add(normal[1], normal[2] * normal[2]))
+        .mul_add(
+            normal[0],
+            normal[1].mul_add(normal[1], normal[2] * normal[2]),
+        )
         .sqrt();
     if length > 0.0001 {
         [normal[0] / length, normal[1] / length, normal[2] / length]
