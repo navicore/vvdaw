@@ -10,6 +10,9 @@ use bevy::prelude::*;
 
 use crate::highway::ROAD_LENGTH;
 
+/// Shadow cascade configuration for near highway visibility
+const NEAR_SHADOW_CASCADE_BOUND: f32 = 50.0;
+
 pub struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
@@ -44,8 +47,8 @@ fn setup_scene(mut commands: Commands) {
         Transform::from_xyz(-30.0, 25.0, -20.0).looking_at(Vec3::ZERO, Vec3::Y),
         // Configure shadow cascades for our highway scene
         CascadeShadowConfigBuilder {
-            first_cascade_far_bound: 50.0, // First cascade covers near highway
-            maximum_distance: ROAD_LENGTH, // Match highway length
+            first_cascade_far_bound: NEAR_SHADOW_CASCADE_BOUND, // First cascade covers near highway
+            maximum_distance: ROAD_LENGTH,                      // Match highway length
             ..default()
         }
         .build(),

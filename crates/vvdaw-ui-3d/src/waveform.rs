@@ -248,12 +248,25 @@ fn add_edge_quad(
 ///
 /// Uses cross product of two edge vectors to compute the face normal.
 /// The normal is normalized to unit length for proper lighting calculations.
-fn calculate_quad_normal(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> [f32; 3] {
+///
+/// # Parameters
+/// - `v0`: Base vertex at previous time
+/// - `v1`: Extruded vertex at previous time
+/// - `v2`: Base vertex at current time
+/// - `is_left_wall`: True for left wall, false for right wall
+///
+/// The two edge vectors are:
+/// - `v0 → v1`: Extrusion direction (perpendicular to wall, toward road)
+/// - `v0 → v2`: Time progression direction (along highway)
+fn calculate_quad_normal(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3], is_left_wall: bool) -> [f32; 3] {
     // Calculate two edge vectors
-    let edge1 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
-    let edge2 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+    // edge1: extrusion direction (v0 → v1, perpendicular to wall)
+    // edge2: time progression direction (v0 → v2, along highway)
+    let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+    let edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
 
-    // Cross product: edge1 × edge2
+    // Cross product: edge1 × edge2 (extrusion × time)
+    // This gives outward-facing normal for counter-clockwise winding
     let normal = [
         edge1[1].mul_add(edge2[2], -(edge1[2] * edge2[1])),
         edge1[2].mul_add(edge2[0], -(edge1[0] * edge2[2])),
@@ -270,8 +283,13 @@ fn calculate_quad_normal(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> [f32; 3] {
     if length > 0.0001 {
         [normal[0] / length, normal[1] / length, normal[2] / length]
     } else {
-        // Fallback for degenerate quad (shouldn't happen in practice)
-        [0.0, 1.0, 0.0]
+        // Fallback for degenerate quad: point outward from wall toward road
+        // Left wall: +X direction, Right wall: -X direction
+        if is_left_wall {
+            [1.0, 0.0, 0.0]
+        } else {
+            [-1.0, 0.0, 0.0]
+        }
     }
 }
 
@@ -454,6 +472,12 @@ fn generate_waveform_mesh(
         return create_empty_mesh();
     }
 
+    // Need at least 2 samples (one stride apart) to create a single quad
+    let sample_count = (end_sample - start_sample) / sample_stride;
+    if sample_count < 2 {
+        return create_empty_mesh();
+    }
+
     let time_per_sample = 1.0 / sample_rate as f32;
     let half_thickness = config.wall_thickness / 2.0;
 
@@ -498,7 +522,7 @@ fn generate_waveform_mesh(
             positions.extend_from_slice(&[v0, v1, v2, v3]);
 
             // Calculate proper normal from quad geometry
-            let wave_normal = calculate_quad_normal(v0, v1, v2);
+            let wave_normal = calculate_quad_normal(v0, v1, v2, is_left_wall);
             normals.extend_from_slice(&[wave_normal, wave_normal, wave_normal, wave_normal]);
 
             // Tangents for the quad (Z direction along wall, w=1.0 for handedness)

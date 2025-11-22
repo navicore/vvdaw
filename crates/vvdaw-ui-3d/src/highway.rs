@@ -78,7 +78,6 @@ type WallQuery<'w, 's> = Query<
     's,
     (
         Entity,
-        &'static Mesh3d,
         Option<&'static LeftWallBase>,
         Option<&'static LeftWaveform>,
         Option<&'static RightWallBase>,
@@ -89,6 +88,8 @@ type WallQuery<'w, 's> = Query<
 /// Highway visual configuration
 const ROAD_WIDTH: f32 = 20.0;
 pub const ROAD_LENGTH: f32 = 500.0;
+/// Offset between road edge and wall position (creates gap for visual separation)
+const WALL_OFFSET: f32 = 0.25;
 
 /// Material color constants
 const ASPHALT_COLOR: Color = Color::srgb(0.25, 0.25, 0.27);
@@ -121,8 +122,8 @@ fn setup_highway(
     // Meshes will be generated when waveform data is loaded
     // Position at edge of road (ROAD_WIDTH is half_size, so full width is 2*ROAD_WIDTH)
 
-    let wall_position_left = -ROAD_WIDTH - 0.25;
-    let wall_position_right = ROAD_WIDTH + 0.25;
+    let wall_position_left = -ROAD_WIDTH - WALL_OFFSET;
+    let wall_position_right = ROAD_WIDTH + WALL_OFFSET;
 
     // Base wall material - concrete (brighter for better light response)
     let base_wall_material = materials.add(StandardMaterial {
@@ -262,7 +263,7 @@ fn update_waveform_meshes(
     let right_wave_handle = meshes.add(right_wave_mesh);
 
     // Update entities with pre-generated mesh handles
-    for (entity, _, left_base, left_wave, right_base, right_wave) in &wall_query {
+    for (entity, left_base, left_wave, right_base, right_wave) in &wall_query {
         if left_base.is_some() {
             commands
                 .entity(entity)
