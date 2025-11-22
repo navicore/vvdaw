@@ -2,6 +2,7 @@
 //!
 //! Implements Descent-style 6DOF camera movement for navigating the 3D highway.
 
+use bevy::camera::{Exposure, PhysicalCameraParameters};
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
@@ -67,6 +68,14 @@ fn setup_camera(mut commands: Commands) {
     ])
     .with(CameraAction::Look, MouseButton::Right);
 
+    // Physical camera parameters for proper exposure
+    let camera_params = PhysicalCameraParameters {
+        aperture_f_stops: 4.0,        // f/4 - good depth of field
+        shutter_speed_s: 1.0 / 125.0, // 1/125s - standard outdoor speed
+        sensitivity_iso: 400.0,       // ISO 400 - moderate sensitivity
+        sensor_height: 0.01866,       // Full-frame 35mm sensor
+    };
+
     // Position camera to view the waveforms
     // - Behind and above the start of the highway
     // - Looking forward down the highway (negative Z direction)
@@ -77,6 +86,7 @@ fn setup_camera(mut commands: Commands) {
             ..default()
         },
         Transform::from_xyz(0.0, 10.0, 20.0).looking_at(Vec3::new(0.0, 5.0, -50.0), Vec3::Y),
+        Exposure::from_physical_camera(camera_params),
         FlightCamera::default(),
         input_map,
         // TODO: Add fog once we figure out the right Bevy 0.15 API

@@ -140,10 +140,114 @@ impl Default for WaveformMeshConfig {
     }
 }
 
+/// Create an empty mesh with required PBR attributes
+fn create_empty_mesh() -> Mesh {
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, Vec::<[f32; 3]>::new());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, Vec::<[f32; 4]>::new());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, Vec::<[f32; 2]>::new());
+    mesh
+}
+
+/// Add base wall rectangle faces (inner and outer)
+fn add_wall_faces(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    tangents: &mut Vec<[f32; 4]>,
+    uvs: &mut Vec<[f32; 2]>,
+    indices: &mut Vec<u32>,
+    corners: [[f32; 3]; 8],
+    is_left_wall: bool,
+) {
+    let base_start_idx = positions.len() as u32;
+    positions.extend_from_slice(&corners);
+
+    // Determine normal directions based on wall side
+    let (normal_inner, normal_outer) = if is_left_wall {
+        ([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0])
+    } else {
+        ([-1.0, 0.0, 0.0], [1.0, 0.0, 0.0])
+    };
+    normals.extend_from_slice(&[
+        normal_inner,
+        normal_inner,
+        normal_inner,
+        normal_inner,
+        normal_outer,
+        normal_outer,
+        normal_outer,
+        normal_outer,
+    ]);
+
+    let tangent = [0.0, 0.0, 1.0, 1.0];
+    tangents.extend_from_slice(&[
+        tangent, tangent, tangent, tangent, tangent, tangent, tangent, tangent,
+    ]);
+
+    uvs.extend_from_slice(&[
+        [0.0, 1.0],
+        [0.0, 0.0],
+        [1.0, 1.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 0.0],
+        [1.0, 1.0],
+        [1.0, 0.0],
+    ]);
+
+    // Inner and outer face triangles
+    indices.extend_from_slice(&[
+        base_start_idx,
+        base_start_idx + 1,
+        base_start_idx + 2,
+        base_start_idx + 2,
+        base_start_idx + 1,
+        base_start_idx + 3,
+        base_start_idx + 4,
+        base_start_idx + 6,
+        base_start_idx + 5,
+        base_start_idx + 6,
+        base_start_idx + 7,
+        base_start_idx + 5,
+    ]);
+}
+
+/// Add top or bottom edge quad
+fn add_edge_quad(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    tangents: &mut Vec<[f32; 4]>,
+    uvs: &mut Vec<[f32; 2]>,
+    indices: &mut Vec<u32>,
+    corners: [[f32; 3]; 4],
+    normal: [f32; 3],
+) {
+    let start_idx = positions.len() as u32;
+    positions.extend_from_slice(&corners);
+    normals.extend_from_slice(&[normal, normal, normal, normal]);
+
+    let tangent = [0.0, 0.0, 1.0, 1.0];
+    tangents.extend_from_slice(&[tangent, tangent, tangent, tangent]);
+    uvs.extend_from_slice(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]);
+
+    indices.extend_from_slice(&[
+        start_idx,
+        start_idx + 1,
+        start_idx + 2,
+        start_idx + 1,
+        start_idx + 3,
+        start_idx + 2,
+    ]);
+}
+
 /// Generate separate meshes for base wall and waveform relief
 ///
-/// Returns (base_wall_mesh, waveform_mesh) as separate meshes that can have different materials.
-/// - Base wall: solid rectangular panel from ground to wall_height (for concrete material)
+/// Returns (`base_wall_mesh`, `waveform_mesh`) as separate meshes that can have different materials.
+/// - Base wall: solid rectangular panel from ground to `wall_height` (for concrete material)
 /// - Waveform: relief geometry extruding from the inner face toward road center (for glowing material)
 ///
 /// Only renders samples within the time window centered on `current_position_seconds`
@@ -157,8 +261,20 @@ pub fn generate_channel_meshes(
     is_left_wall: bool,
 ) -> (Mesh, Mesh) {
     (
-        generate_base_wall_mesh(samples, sample_rate, current_position_seconds, config),
-        generate_waveform_mesh(samples, sample_rate, current_position_seconds, config, is_left_wall),
+        generate_base_wall_mesh(
+            samples,
+            sample_rate,
+            current_position_seconds,
+            config,
+            is_left_wall,
+        ),
+        generate_waveform_mesh(
+            samples,
+            sample_rate,
+            current_position_seconds,
+            config,
+            is_left_wall,
+        ),
     )
 }
 
@@ -168,16 +284,16 @@ fn generate_base_wall_mesh(
     sample_rate: u32,
     current_position_seconds: f32,
     config: &WaveformMeshConfig,
+    is_left_wall: bool,
 ) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
+    let mut tangents = Vec::new();
+    let mut uvs = Vec::new();
     let mut indices = Vec::new();
 
     if samples.is_empty() {
-        return Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
+        return create_empty_mesh();
     }
 
     let start_time = (current_position_seconds - config.window_duration).max(0.0);
@@ -186,10 +302,7 @@ fn generate_base_wall_mesh(
     let end_sample = ((end_time * sample_rate as f32) as usize).min(samples.len());
 
     if start_sample >= samples.len() || start_sample >= end_sample {
-        return Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
+        return create_empty_mesh();
     }
 
     let time_per_sample = 1.0 / sample_rate as f32;
@@ -204,92 +317,68 @@ fn generate_base_wall_mesh(
     // --- STEP 1: Generate base wall panel (simple rectangle) ---
 
     // Inner face vertices (toward road center, +X)
-    let base_inner_tl = [half_thickness, config.wall_height, z_start]; // Top-left
-    let base_inner_bl = [half_thickness, 0.0, z_start]; // Bottom-left
-    let base_inner_tr = [half_thickness, config.wall_height, z_end]; // Top-right
-    let base_inner_br = [half_thickness, 0.0, z_end]; // Bottom-right
+    let inner_top_left = [half_thickness, config.wall_height, z_start];
+    let inner_bottom_left = [half_thickness, 0.0, z_start];
+    let inner_top_right = [half_thickness, config.wall_height, z_end];
+    let inner_bottom_right = [half_thickness, 0.0, z_end];
 
     // Outer face vertices (away from road, -X)
-    let base_outer_tl = [-half_thickness, config.wall_height, z_start];
-    let base_outer_bl = [-half_thickness, 0.0, z_start];
-    let base_outer_tr = [-half_thickness, config.wall_height, z_end];
-    let base_outer_br = [-half_thickness, 0.0, z_end];
+    let outer_top_left = [-half_thickness, config.wall_height, z_start];
+    let outer_bottom_left = [-half_thickness, 0.0, z_start];
+    let outer_top_right = [-half_thickness, config.wall_height, z_end];
+    let outer_bottom_right = [-half_thickness, 0.0, z_end];
 
-    let base_start_idx = positions.len() as u32;
+    // Add base wall inner/outer faces
+    add_wall_faces(
+        &mut positions,
+        &mut normals,
+        &mut tangents,
+        &mut uvs,
+        &mut indices,
+        [
+            inner_top_left,
+            inner_bottom_left,
+            inner_top_right,
+            inner_bottom_right,
+            outer_top_left,
+            outer_bottom_left,
+            outer_top_right,
+            outer_bottom_right,
+        ],
+        is_left_wall,
+    );
 
-    // Add base wall vertices
-    positions.extend_from_slice(&[
-        base_inner_tl,
-        base_inner_bl,
-        base_inner_tr,
-        base_inner_br,
-        base_outer_tl,
-        base_outer_bl,
-        base_outer_tr,
-        base_outer_br,
-    ]);
+    // Add top edge
+    add_edge_quad(
+        &mut positions,
+        &mut normals,
+        &mut tangents,
+        &mut uvs,
+        &mut indices,
+        [
+            inner_top_left,
+            inner_top_right,
+            outer_top_left,
+            outer_top_right,
+        ],
+        [0.0, 1.0, 0.0],
+    );
 
-    // Add normals for base wall
-    let normal_inner = [1.0, 0.0, 0.0]; // Inner face points toward +X (road center)
-    let normal_outer = [-1.0, 0.0, 0.0]; // Outer face points toward -X (away from road)
-    normals.extend_from_slice(&[
-        normal_inner,
-        normal_inner,
-        normal_inner,
-        normal_inner,
-        normal_outer,
-        normal_outer,
-        normal_outer,
-        normal_outer,
-    ]);
-
-    // Inner face triangles (0,1,2) (2,1,3)
-    indices.extend_from_slice(&[
-        base_start_idx,
-        base_start_idx + 1,
-        base_start_idx + 2,
-        base_start_idx + 2,
-        base_start_idx + 1,
-        base_start_idx + 3,
-    ]);
-
-    // Outer face triangles (4,6,5) (6,7,5) - reversed winding for outward normal
-    indices.extend_from_slice(&[
-        base_start_idx + 4,
-        base_start_idx + 6,
-        base_start_idx + 5,
-        base_start_idx + 6,
-        base_start_idx + 7,
-        base_start_idx + 5,
-    ]);
-
-    // Top edge triangles (0,2,4) (2,6,4)
-    let normal_top = [0.0, 1.0, 0.0];
-    let top_start_idx = positions.len() as u32;
-    positions.extend_from_slice(&[base_inner_tl, base_inner_tr, base_outer_tl, base_outer_tr]);
-    normals.extend_from_slice(&[normal_top, normal_top, normal_top, normal_top]);
-    indices.extend_from_slice(&[
-        top_start_idx,
-        top_start_idx + 1,
-        top_start_idx + 2,
-        top_start_idx + 1,
-        top_start_idx + 3,
-        top_start_idx + 2,
-    ]);
-
-    // Bottom edge triangles
-    let normal_bottom = [0.0, -1.0, 0.0];
-    let bottom_start_idx = positions.len() as u32;
-    positions.extend_from_slice(&[base_inner_bl, base_outer_bl, base_inner_br, base_outer_br]);
-    normals.extend_from_slice(&[normal_bottom, normal_bottom, normal_bottom, normal_bottom]);
-    indices.extend_from_slice(&[
-        bottom_start_idx,
-        bottom_start_idx + 1,
-        bottom_start_idx + 2,
-        bottom_start_idx + 1,
-        bottom_start_idx + 3,
-        bottom_start_idx + 2,
-    ]);
+    // Add bottom edge
+    add_edge_quad(
+        &mut positions,
+        &mut normals,
+        &mut tangents,
+        &mut uvs,
+        &mut indices,
+        [
+            inner_bottom_left,
+            outer_bottom_left,
+            inner_bottom_right,
+            outer_bottom_right,
+        ],
+        [0.0, -1.0, 0.0],
+    );
 
     // Build base wall mesh
     let mut mesh = Mesh::new(
@@ -299,6 +388,8 @@ fn generate_base_wall_mesh(
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
 
     mesh
@@ -314,13 +405,12 @@ fn generate_waveform_mesh(
 ) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
+    let mut tangents = Vec::new();
+    let mut uvs = Vec::new();
     let mut indices = Vec::new();
 
     if samples.is_empty() {
-        return Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
+        return create_empty_mesh();
     }
 
     let sample_stride = config.sample_stride.max(1);
@@ -330,10 +420,7 @@ fn generate_waveform_mesh(
     let end_sample = ((end_time * sample_rate as f32) as usize).min(samples.len());
 
     if start_sample >= samples.len() || start_sample >= end_sample {
-        return Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
+        return create_empty_mesh();
     }
 
     let time_per_sample = 1.0 / sample_rate as f32;
@@ -373,13 +460,25 @@ fn generate_waveform_mesh(
 
             // Four vertices for the waveform quad
             positions.extend_from_slice(&[
-                [x_base, prev_y_val, prev_z_val],       // Previous on base
-                [x_extruded, prev_y_val, prev_z_val],   // Previous extruded
-                [x_base, y_wave, z],                    // Current on base
-                [x_extruded, y_wave, z],                // Current extruded
+                [x_base, prev_y_val, prev_z_val],     // Previous on base
+                [x_extruded, prev_y_val, prev_z_val], // Previous extruded
+                [x_base, y_wave, z],                  // Current on base
+                [x_extruded, y_wave, z],              // Current extruded
             ]);
 
             normals.extend_from_slice(&[wave_normal, wave_normal, wave_normal, wave_normal]);
+
+            // Tangents for the quad (Z direction along wall, w=1.0 for handedness)
+            let wave_tangent = [0.0, 0.0, 1.0, 1.0];
+            tangents.extend_from_slice(&[wave_tangent, wave_tangent, wave_tangent, wave_tangent]);
+
+            // UVs for the quad (simple planar mapping)
+            uvs.extend_from_slice(&[
+                [0.0, 0.0], // Previous on base
+                [1.0, 0.0], // Previous extruded
+                [0.0, 1.0], // Current on base
+                [1.0, 1.0], // Current extruded
+            ]);
 
             // Two triangles for the quad
             indices.extend_from_slice(&[
@@ -404,6 +503,8 @@ fn generate_waveform_mesh(
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
 
     mesh

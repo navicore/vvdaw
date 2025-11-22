@@ -6,6 +6,7 @@
 
 use crate::waveform::{WaveformData, WaveformMeshConfig, generate_channel_meshes};
 use bevy::asset::RenderAssetUsages;
+use bevy::light::NotShadowCaster;
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
 use vvdaw_comms::{AudioEvent, EventReceiver};
@@ -67,6 +68,20 @@ struct RightWallBase;
 #[derive(Component)]
 struct RightWaveform;
 
+/// Type alias for the complex wall query
+type WallQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Mesh3d,
+        Option<&'static LeftWallBase>,
+        Option<&'static LeftWaveform>,
+        Option<&'static RightWallBase>,
+        Option<&'static RightWaveform>,
+    ),
+>;
+
 /// Highway visual configuration
 const ROAD_WIDTH: f32 = 20.0;
 const ROAD_LENGTH: f32 = 500.0;
@@ -80,7 +95,7 @@ fn setup_highway(
     // Road surface - asphalt
     let road_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::new(ROAD_WIDTH, ROAD_LENGTH)));
     let road_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.12, 0.12, 0.13), // Dark desaturated gray asphalt
+        base_color: Color::srgb(0.25, 0.25, 0.27), // Medium-dark gray asphalt (brighter for PBR)
         metallic: 0.0,
         perceptual_roughness: 0.85, // Rough asphalt surface
         ..default()
@@ -99,9 +114,9 @@ fn setup_highway(
     let wall_position_left = -ROAD_WIDTH - 0.25;
     let wall_position_right = ROAD_WIDTH + 0.25;
 
-    // Base wall material - dark concrete
+    // Base wall material - concrete (brighter for better light response)
     let base_wall_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.15, 0.15, 0.16), // Dark gray concrete
+        base_color: Color::srgb(0.35, 0.35, 0.37), // Medium gray concrete (brighter for PBR)
         metallic: 0.0,
         perceptual_roughness: 0.7, // Painted concrete feel
         ..default()
@@ -115,6 +130,7 @@ fn setup_highway(
         ))),
         MeshMaterial3d(base_wall_material.clone()),
         Transform::from_xyz(wall_position_left, 0.0, 0.0),
+        NotShadowCaster, // Disable shadow casting for custom meshes
         LeftWallBase,
     ));
 
@@ -125,13 +141,14 @@ fn setup_highway(
             RenderAssetUsages::RENDER_WORLD,
         ))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.1, 0.7, 0.6), // Bright industrial teal
+            base_color: Color::srgb(0.2, 0.8, 0.7), // Bright industrial teal
             metallic: 0.0,
             perceptual_roughness: 0.3, // Smoother than base wall
-            emissive: bevy::color::LinearRgba::rgb(0.0, 0.2, 0.15), // Teal glow
+            emissive: bevy::color::LinearRgba::rgb(0.0, 0.5, 0.4), // Stronger teal glow for visibility
             ..default()
         })),
         Transform::from_xyz(wall_position_left, 0.0, 0.0),
+        NotShadowCaster, // Disable shadow casting for custom meshes
         LeftWaveform,
     ));
 
@@ -143,6 +160,7 @@ fn setup_highway(
         ))),
         MeshMaterial3d(base_wall_material),
         Transform::from_xyz(wall_position_right, 0.0, 0.0),
+        NotShadowCaster, // Disable shadow casting for custom meshes
         RightWallBase,
     ));
 
@@ -153,13 +171,14 @@ fn setup_highway(
             RenderAssetUsages::RENDER_WORLD,
         ))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.9, 0.5, 0.15), // Bright industrial amber
+            base_color: Color::srgb(1.0, 0.6, 0.2), // Bright industrial amber
             metallic: 0.0,
             perceptual_roughness: 0.3, // Smoother than base wall
-            emissive: bevy::color::LinearRgba::rgb(0.25, 0.12, 0.0), // Amber glow
+            emissive: bevy::color::LinearRgba::rgb(0.6, 0.3, 0.0), // Stronger amber glow for visibility
             ..default()
         })),
         Transform::from_xyz(wall_position_right, 0.0, 0.0),
+        NotShadowCaster, // Disable shadow casting for custom meshes
         RightWaveform,
     ));
 }
@@ -174,10 +193,7 @@ fn update_waveform_meshes(
     playback: Res<crate::playback::PlaybackState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
-    left_base_query: Query<(Entity, &Mesh3d), With<LeftWallBase>>,
-    left_wave_query: Query<(Entity, &Mesh3d), With<LeftWaveform>>,
-    right_base_query: Query<(Entity, &Mesh3d), With<RightWallBase>>,
-    right_wave_query: Query<(Entity, &Mesh3d), With<RightWaveform>>,
+    wall_query: WallQuery,
 ) {
     // Throttle mesh updates: only regenerate if position changed significantly
     // or if force update is requested (e.g., new file loaded)
@@ -219,14 +235,6 @@ fn update_waveform_meshes(
         true, // is_left_wall = true
     );
 
-    if let Ok((entity, _)) = left_base_query.single() {
-        commands.entity(entity).insert(Mesh3d(meshes.add(left_base_mesh)));
-    }
-
-    if let Ok((entity, _)) = left_wave_query.single() {
-        commands.entity(entity).insert(Mesh3d(meshes.add(left_wave_mesh)));
-    }
-
     // Update right channel meshes
     let right_samples = waveform.right_channel();
     let (right_base_mesh, right_wave_mesh) = generate_channel_meshes(
@@ -237,12 +245,25 @@ fn update_waveform_meshes(
         false, // is_left_wall = false
     );
 
-    if let Ok((entity, _)) = right_base_query.single() {
-        commands.entity(entity).insert(Mesh3d(meshes.add(right_base_mesh)));
-    }
-
-    if let Ok((entity, _)) = right_wave_query.single() {
-        commands.entity(entity).insert(Mesh3d(meshes.add(right_wave_mesh)));
+    // Update all wall meshes using combined query
+    for (entity, _, left_base, left_wave, right_base, right_wave) in &wall_query {
+        if left_base.is_some() {
+            commands
+                .entity(entity)
+                .insert(Mesh3d(meshes.add(left_base_mesh.clone())));
+        } else if left_wave.is_some() {
+            commands
+                .entity(entity)
+                .insert(Mesh3d(meshes.add(left_wave_mesh.clone())));
+        } else if right_base.is_some() {
+            commands
+                .entity(entity)
+                .insert(Mesh3d(meshes.add(right_base_mesh.clone())));
+        } else if right_wave.is_some() {
+            commands
+                .entity(entity)
+                .insert(Mesh3d(meshes.add(right_wave_mesh.clone())));
+        }
     }
 
     // Update tracking and clear flags
