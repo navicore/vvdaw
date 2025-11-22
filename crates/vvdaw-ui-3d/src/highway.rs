@@ -4,8 +4,9 @@
 //! - The road surface represents the timeline
 //! - Left/right walls represent stereo waveforms (guardrails)
 
-use crate::waveform::{WaveformData, WaveformMeshConfig, generate_channel_mesh};
+use crate::waveform::{WaveformData, WaveformMeshConfig, generate_channel_meshes};
 use bevy::asset::RenderAssetUsages;
+use bevy::light::NotShadowCaster;
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
 use vvdaw_comms::{AudioEvent, EventReceiver};
@@ -51,17 +52,50 @@ impl Plugin for HighwayPlugin {
     }
 }
 
-/// Marker component for left channel wall
+/// Marker component for left channel base wall
 #[derive(Component)]
-struct LeftWall;
+struct LeftWallBase;
 
-/// Marker component for right channel wall
+/// Marker component for left channel waveform
 #[derive(Component)]
-struct RightWall;
+struct LeftWaveform;
+
+/// Marker component for right channel base wall
+#[derive(Component)]
+struct RightWallBase;
+
+/// Marker component for right channel waveform
+#[derive(Component)]
+struct RightWaveform;
+
+/// Query for all wall entities (base walls and waveforms for both channels)
+///
+/// This type alias simplifies the function signature for `update_waveform_meshes`.
+/// Each entity will have exactly one of the four marker components, allowing us to
+/// identify which mesh type to generate and apply.
+type WallQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        Option<&'static LeftWallBase>,
+        Option<&'static LeftWaveform>,
+        Option<&'static RightWallBase>,
+        Option<&'static RightWaveform>,
+    ),
+>;
 
 /// Highway visual configuration
 const ROAD_WIDTH: f32 = 20.0;
-const ROAD_LENGTH: f32 = 500.0;
+pub const ROAD_LENGTH: f32 = 500.0;
+/// Offset between road edge and wall position (creates gap for visual separation)
+const WALL_OFFSET: f32 = 0.25;
+
+/// Material color constants
+const ASPHALT_COLOR: Color = Color::srgb(0.25, 0.25, 0.27);
+const CONCRETE_BASE_COLOR: Color = Color::srgb(0.35, 0.35, 0.37);
+const WAVEFORM_TEAL_COLOR: Color = Color::srgb(0.2, 0.8, 0.7);
+const WAVEFORM_AMBER_COLOR: Color = Color::srgb(1.0, 0.6, 0.2);
 
 /// Setup the highway geometry (road + placeholder walls)
 fn setup_highway(
@@ -69,12 +103,12 @@ fn setup_highway(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Grid road surface - dark gray
+    // Road surface - asphalt
     let road_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::new(ROAD_WIDTH, ROAD_LENGTH)));
     let road_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.2, 0.2, 0.2), // Medium gray for visibility
+        base_color: ASPHALT_COLOR,
         metallic: 0.0,
-        perceptual_roughness: 0.8,
+        perceptual_roughness: 0.85, // Rough asphalt surface
         ..default()
     });
 
@@ -86,41 +120,77 @@ fn setup_highway(
 
     // Spawn placeholder entities for waveform walls
     // Meshes will be generated when waveform data is loaded
-
-    // Left channel wall (placeholder) - bright green
     // Position at edge of road (ROAD_WIDTH is half_size, so full width is 2*ROAD_WIDTH)
-    // Offset by half the waveform width so inner edge aligns with road edge
+
+    let wall_position_left = -ROAD_WIDTH - WALL_OFFSET;
+    let wall_position_right = ROAD_WIDTH + WALL_OFFSET;
+
+    // Base wall material - concrete (brighter for better light response)
+    let base_wall_material = materials.add(StandardMaterial {
+        base_color: CONCRETE_BASE_COLOR,
+        metallic: 0.0,
+        perceptual_roughness: 0.7, // Painted concrete feel
+        ..default()
+    });
+
+    // Left channel base wall
     commands.spawn((
         Mesh3d(meshes.add(Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::RENDER_WORLD,
         ))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.0, 1.0, 0.0), // Pure bright green
-            metallic: 0.0,
-            perceptual_roughness: 1.0,
-            ..default()
-        })),
-        Transform::from_xyz(-ROAD_WIDTH - 0.25, 0.0, 0.0), // -20.25 for waveform width 0.5
-        LeftWall,
+        MeshMaterial3d(base_wall_material.clone()),
+        Transform::from_xyz(wall_position_left, 0.0, 0.0),
+        NotShadowCaster, // Disable shadow casting for custom meshes
+        LeftWallBase,
     ));
 
-    // Right channel wall (placeholder) - bright red
-    // Position at edge of road (ROAD_WIDTH is half_size, so full width is 2*ROAD_WIDTH)
-    // Offset by half the waveform width so inner edge aligns with road edge
+    // Left channel waveform - industrial teal with emissive glow
     commands.spawn((
         Mesh3d(meshes.add(Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::RENDER_WORLD,
         ))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.0, 0.0), // Pure bright red
+            base_color: WAVEFORM_TEAL_COLOR,
             metallic: 0.0,
-            perceptual_roughness: 1.0,
+            perceptual_roughness: 0.3, // Smoother than base wall
+            emissive: bevy::color::LinearRgba::rgb(0.0, 0.5, 0.4), // Stronger teal glow for visibility
             ..default()
         })),
-        Transform::from_xyz(ROAD_WIDTH + 0.25, 0.0, 0.0), // 20.25 for waveform width 0.5
-        RightWall,
+        Transform::from_xyz(wall_position_left, 0.0, 0.0),
+        NotShadowCaster, // Disable shadow casting for custom meshes
+        LeftWaveform,
+    ));
+
+    // Right channel base wall
+    commands.spawn((
+        Mesh3d(meshes.add(Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        ))),
+        MeshMaterial3d(base_wall_material),
+        Transform::from_xyz(wall_position_right, 0.0, 0.0),
+        NotShadowCaster, // Disable shadow casting for custom meshes
+        RightWallBase,
+    ));
+
+    // Right channel waveform - industrial amber with emissive glow
+    commands.spawn((
+        Mesh3d(meshes.add(Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        ))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: WAVEFORM_AMBER_COLOR,
+            metallic: 0.0,
+            perceptual_roughness: 0.3, // Smoother than base wall
+            emissive: bevy::color::LinearRgba::rgb(0.6, 0.3, 0.0), // Stronger amber glow for visibility
+            ..default()
+        })),
+        Transform::from_xyz(wall_position_right, 0.0, 0.0),
+        NotShadowCaster, // Disable shadow casting for custom meshes
+        RightWaveform,
     ));
 }
 
@@ -134,8 +204,7 @@ fn update_waveform_meshes(
     playback: Res<crate::playback::PlaybackState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
-    left_query: Query<(Entity, &Mesh3d), With<LeftWall>>,
-    right_query: Query<(Entity, &Mesh3d), With<RightWall>>,
+    wall_query: WallQuery,
 ) {
     // Throttle mesh updates: only regenerate if position changed significantly
     // or if force update is requested (e.g., new file loaded)
@@ -167,30 +236,51 @@ fn update_waveform_meshes(
         ..Default::default()
     };
 
-    // Update left channel mesh
-    if let Ok((entity, _mesh_handle)) = left_query.single() {
-        let left_samples = waveform.left_channel();
-        let mesh = generate_channel_mesh(
-            &left_samples,
-            waveform.sample_rate,
-            current_position,
-            &config,
-        );
-        let new_handle = meshes.add(mesh);
-        commands.entity(entity).insert(Mesh3d(new_handle));
-    }
+    // Generate meshes once and cache them
+    let left_samples = waveform.left_channel();
+    let right_samples = waveform.right_channel();
 
-    // Update right channel mesh
-    if let Ok((entity, _mesh_handle)) = right_query.single() {
-        let right_samples = waveform.right_channel();
-        let mesh = generate_channel_mesh(
-            &right_samples,
-            waveform.sample_rate,
-            current_position,
-            &config,
-        );
-        let new_handle = meshes.add(mesh);
-        commands.entity(entity).insert(Mesh3d(new_handle));
+    let (left_base_mesh, left_wave_mesh) = generate_channel_meshes(
+        &left_samples,
+        waveform.sample_rate,
+        current_position,
+        &config,
+        true,
+    );
+
+    let (right_base_mesh, right_wave_mesh) = generate_channel_meshes(
+        &right_samples,
+        waveform.sample_rate,
+        current_position,
+        &config,
+        false,
+    );
+
+    // Add meshes to asset storage once
+    let left_base_handle = meshes.add(left_base_mesh);
+    let left_wave_handle = meshes.add(left_wave_mesh);
+    let right_base_handle = meshes.add(right_base_mesh);
+    let right_wave_handle = meshes.add(right_wave_mesh);
+
+    // Update entities with pre-generated mesh handles
+    for (entity, left_base, left_wave, right_base, right_wave) in &wall_query {
+        if left_base.is_some() {
+            commands
+                .entity(entity)
+                .insert(Mesh3d(left_base_handle.clone()));
+        } else if left_wave.is_some() {
+            commands
+                .entity(entity)
+                .insert(Mesh3d(left_wave_handle.clone()));
+        } else if right_base.is_some() {
+            commands
+                .entity(entity)
+                .insert(Mesh3d(right_base_handle.clone()));
+        } else if right_wave.is_some() {
+            commands
+                .entity(entity)
+                .insert(Mesh3d(right_wave_handle.clone()));
+        }
     }
 
     // Update tracking and clear flags
