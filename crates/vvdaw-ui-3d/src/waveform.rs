@@ -109,8 +109,12 @@ pub struct WaveformMeshConfig {
     /// How many samples to skip between vertices (LOD)
     /// 1 = every sample, 10 = every 10th sample, etc.
     pub sample_stride: usize,
-    /// Width of the wall in world units
-    pub width: f32,
+    /// Thickness of the wall (depth in X direction)
+    pub wall_thickness: f32,
+    /// Total height of the base wall panel
+    pub wall_height: f32,
+    /// How far the waveform extrudes from the base wall surface
+    pub waveform_extrusion: f32,
     /// Scale factor for amplitude (height)
     pub amplitude_scale: f32,
     /// Length per second of audio in world units
@@ -124,53 +128,63 @@ pub struct WaveformMeshConfig {
 impl Default for WaveformMeshConfig {
     fn default() -> Self {
         Self {
-            sample_stride: 10, // Skip samples for performance
-            width: 0.5,
-            amplitude_scale: 10.0,
-            time_scale: 50.0,      // 50 units per second
-            base_height: 10.0,     // Elevate waveform 10 units above the road
-            window_duration: 15.0, // Render 15 seconds ahead and behind (30 total)
+            sample_stride: 10,        // Skip samples for performance
+            wall_thickness: 0.5,      // 0.5 units thick
+            wall_height: 25.0,        // 25 units tall base wall
+            waveform_extrusion: 0.15, // Waveform protrudes 0.15 units from base
+            amplitude_scale: 10.0,    // Amplitude scaling
+            time_scale: 50.0,         // 50 units per second
+            base_height: 10.0,        // Center line at 10 units above road
+            window_duration: 15.0,    // Render 15 seconds ahead and behind (30 total)
         }
     }
 }
 
-/// Generate a 3D mesh from channel samples for a time window
+/// Generate separate meshes for base wall and waveform relief
 ///
-/// Creates a wall-like mesh where:
-/// - Z-axis = time (along the highway, extending backward)
-/// - Y-axis = amplitude (height of the wall)
-/// - X-axis = thickness (width of the wall, should match wall X position)
+/// Returns (base_wall_mesh, waveform_mesh) as separate meshes that can have different materials.
+/// - Base wall: solid rectangular panel from ground to wall_height (for concrete material)
+/// - Waveform: relief geometry extruding from the inner face toward road center (for glowing material)
 ///
 /// Only renders samples within the time window centered on `current_position_seconds`
-pub fn generate_channel_mesh(
+///
+/// `is_left_wall`: true for left wall (extrudes in +X), false for right wall (extrudes in -X)
+pub fn generate_channel_meshes(
+    samples: &[f32],
+    sample_rate: u32,
+    current_position_seconds: f32,
+    config: &WaveformMeshConfig,
+    is_left_wall: bool,
+) -> (Mesh, Mesh) {
+    (
+        generate_base_wall_mesh(samples, sample_rate, current_position_seconds, config),
+        generate_waveform_mesh(samples, sample_rate, current_position_seconds, config, is_left_wall),
+    )
+}
+
+/// Generate base wall mesh (solid panel)
+fn generate_base_wall_mesh(
     samples: &[f32],
     sample_rate: u32,
     current_position_seconds: f32,
     config: &WaveformMeshConfig,
 ) -> Mesh {
     let mut positions = Vec::new();
+    let mut normals = Vec::new();
     let mut indices = Vec::new();
 
     if samples.is_empty() {
-        // Return empty mesh if no samples
         return Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::RENDER_WORLD,
         );
     }
 
-    // Validate sample_stride to prevent division by zero
-    let sample_stride = config.sample_stride.max(1);
-
-    // Calculate time window bounds
     let start_time = (current_position_seconds - config.window_duration).max(0.0);
     let end_time = current_position_seconds + config.window_duration;
-
-    // Convert to sample indices
     let start_sample = (start_time * sample_rate as f32) as usize;
     let end_sample = ((end_time * sample_rate as f32) as usize).min(samples.len());
 
-    // Early return if window is outside sample range
     if start_sample >= samples.len() || start_sample >= end_sample {
         return Mesh::new(
             PrimitiveTopology::TriangleList,
@@ -178,75 +192,219 @@ pub fn generate_channel_mesh(
         );
     }
 
-    // Calculate time per sample
     let time_per_sample = 1.0 / sample_rate as f32;
+    let half_thickness = config.wall_thickness / 2.0;
 
-    // Generate vertices only for the visible window
-    let mut vertex_index: u32 = 0;
-    let mut first_vertex = true;
+    // Calculate z positions for start and end of window
+    let start_abs_time = start_sample as f32 * time_per_sample;
+    let end_abs_time = end_sample.saturating_sub(1) as f32 * time_per_sample;
+    let z_start = -(start_abs_time - current_position_seconds) * config.time_scale;
+    let z_end = -(end_abs_time - current_position_seconds) * config.time_scale;
 
-    for sample_idx in (start_sample..end_sample).step_by(sample_stride) {
-        let sample = samples[sample_idx];
+    // --- STEP 1: Generate base wall panel (simple rectangle) ---
 
-        // Time relative to the start of the audio
-        let absolute_time = sample_idx as f32 * time_per_sample;
+    // Inner face vertices (toward road center, +X)
+    let base_inner_tl = [half_thickness, config.wall_height, z_start]; // Top-left
+    let base_inner_bl = [half_thickness, 0.0, z_start]; // Bottom-left
+    let base_inner_tr = [half_thickness, config.wall_height, z_end]; // Top-right
+    let base_inner_br = [half_thickness, 0.0, z_end]; // Bottom-right
 
-        // Z position relative to current playback position (keeps mesh centered at origin)
-        let relative_time = absolute_time - current_position_seconds;
-        let z = -relative_time * config.time_scale;
+    // Outer face vertices (away from road, -X)
+    let base_outer_tl = [-half_thickness, config.wall_height, z_start];
+    let base_outer_bl = [-half_thickness, 0.0, z_start];
+    let base_outer_tr = [-half_thickness, config.wall_height, z_end];
+    let base_outer_br = [-half_thickness, 0.0, z_end];
 
-        // Waveform oscillates around base_height (center line)
-        let y_wave = sample.mul_add(config.amplitude_scale, config.base_height);
-        let y_center = config.base_height;
-        let half_width = config.width / 2.0;
+    let base_start_idx = positions.len() as u32;
 
-        // Create quad for this sample (2 triangles)
-        // Front face (toward positive X)
-        positions.push([half_width, y_wave, z]); // Waveform value
-        positions.push([half_width, y_center, z]); // Center line
+    // Add base wall vertices
+    positions.extend_from_slice(&[
+        base_inner_tl,
+        base_inner_bl,
+        base_inner_tr,
+        base_inner_br,
+        base_outer_tl,
+        base_outer_bl,
+        base_outer_tr,
+        base_outer_br,
+    ]);
 
-        // Back face (toward negative X)
-        positions.push([-half_width, y_wave, z]); // Waveform value
-        positions.push([-half_width, y_center, z]); // Center line
+    // Add normals for base wall
+    let normal_inner = [1.0, 0.0, 0.0]; // Inner face points toward +X (road center)
+    let normal_outer = [-1.0, 0.0, 0.0]; // Outer face points toward -X (away from road)
+    normals.extend_from_slice(&[
+        normal_inner,
+        normal_inner,
+        normal_inner,
+        normal_inner,
+        normal_outer,
+        normal_outer,
+        normal_outer,
+        normal_outer,
+    ]);
 
-        // Create indices for quad (if not the first vertex)
-        if !first_vertex {
-            let base = vertex_index;
+    // Inner face triangles (0,1,2) (2,1,3)
+    indices.extend_from_slice(&[
+        base_start_idx,
+        base_start_idx + 1,
+        base_start_idx + 2,
+        base_start_idx + 2,
+        base_start_idx + 1,
+        base_start_idx + 3,
+    ]);
 
-            // Front face (2 triangles)
-            indices.push(base - 4);
-            indices.push(base - 3);
-            indices.push(base + 1);
+    // Outer face triangles (4,6,5) (6,7,5) - reversed winding for outward normal
+    indices.extend_from_slice(&[
+        base_start_idx + 4,
+        base_start_idx + 6,
+        base_start_idx + 5,
+        base_start_idx + 6,
+        base_start_idx + 7,
+        base_start_idx + 5,
+    ]);
 
-            indices.push(base - 4);
-            indices.push(base + 1);
-            indices.push(base);
+    // Top edge triangles (0,2,4) (2,6,4)
+    let normal_top = [0.0, 1.0, 0.0];
+    let top_start_idx = positions.len() as u32;
+    positions.extend_from_slice(&[base_inner_tl, base_inner_tr, base_outer_tl, base_outer_tr]);
+    normals.extend_from_slice(&[normal_top, normal_top, normal_top, normal_top]);
+    indices.extend_from_slice(&[
+        top_start_idx,
+        top_start_idx + 1,
+        top_start_idx + 2,
+        top_start_idx + 1,
+        top_start_idx + 3,
+        top_start_idx + 2,
+    ]);
 
-            // Back face (2 triangles)
-            indices.push(base - 2);
-            indices.push(base + 2);
-            indices.push(base - 1);
+    // Bottom edge triangles
+    let normal_bottom = [0.0, -1.0, 0.0];
+    let bottom_start_idx = positions.len() as u32;
+    positions.extend_from_slice(&[base_inner_bl, base_outer_bl, base_inner_br, base_outer_br]);
+    normals.extend_from_slice(&[normal_bottom, normal_bottom, normal_bottom, normal_bottom]);
+    indices.extend_from_slice(&[
+        bottom_start_idx,
+        bottom_start_idx + 1,
+        bottom_start_idx + 2,
+        bottom_start_idx + 1,
+        bottom_start_idx + 3,
+        bottom_start_idx + 2,
+    ]);
 
-            indices.push(base - 1);
-            indices.push(base + 2);
-            indices.push(base + 3);
-        }
-
-        first_vertex = false;
-        vertex_index += 4;
-    }
-
-    // Build mesh
+    // Build base wall mesh
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     );
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_indices(Indices::U32(indices));
 
-    // Compute smooth normals (works with indexed geometry)
-    mesh.compute_smooth_normals();
+    mesh
+}
+
+/// Generate waveform relief mesh (extrudes toward road center)
+fn generate_waveform_mesh(
+    samples: &[f32],
+    sample_rate: u32,
+    current_position_seconds: f32,
+    config: &WaveformMeshConfig,
+    is_left_wall: bool,
+) -> Mesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+
+    if samples.is_empty() {
+        return Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+    }
+
+    let sample_stride = config.sample_stride.max(1);
+    let start_time = (current_position_seconds - config.window_duration).max(0.0);
+    let end_time = current_position_seconds + config.window_duration;
+    let start_sample = (start_time * sample_rate as f32) as usize;
+    let end_sample = ((end_time * sample_rate as f32) as usize).min(samples.len());
+
+    if start_sample >= samples.len() || start_sample >= end_sample {
+        return Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+    }
+
+    let time_per_sample = 1.0 / sample_rate as f32;
+    let half_thickness = config.wall_thickness / 2.0;
+
+    // Generate waveform relief on outer face
+    let mut prev_z = None;
+    let mut prev_y_wave = None;
+
+    for sample_idx in (start_sample..end_sample).step_by(sample_stride) {
+        let sample = samples[sample_idx];
+        let absolute_time = sample_idx as f32 * time_per_sample;
+        let relative_time = absolute_time - current_position_seconds;
+        let z = -relative_time * config.time_scale;
+
+        // Waveform height oscillates around base_height
+        let y_wave = sample.mul_add(config.amplitude_scale, config.base_height);
+
+        // Waveform extrudes toward road center (inner face)
+        // Left wall: inner face at +half_thickness, extrude toward +X (road center)
+        // Right wall: inner face at -half_thickness, extrude toward -X (road center)
+        let (x_base, x_extruded, wave_normal) = if is_left_wall {
+            // Left wall: positioned at negative X, so +half_thickness is the inner face
+            let base = half_thickness;
+            let extruded = base + config.waveform_extrusion;
+            (base, extruded, [1.0, 0.0, 0.0]) // Normal points toward road center (+X)
+        } else {
+            // Right wall: positioned at positive X, so -half_thickness is the inner face
+            let base = -half_thickness;
+            let extruded = base - config.waveform_extrusion;
+            (base, extruded, [-1.0, 0.0, 0.0]) // Normal points toward road center (-X)
+        };
+
+        if let (Some(prev_z_val), Some(prev_y_val)) = (prev_z, prev_y_wave) {
+            // Create quad connecting previous sample to current sample
+            let wave_start_idx = positions.len() as u32;
+
+            // Four vertices for the waveform quad
+            positions.extend_from_slice(&[
+                [x_base, prev_y_val, prev_z_val],       // Previous on base
+                [x_extruded, prev_y_val, prev_z_val],   // Previous extruded
+                [x_base, y_wave, z],                    // Current on base
+                [x_extruded, y_wave, z],                // Current extruded
+            ]);
+
+            normals.extend_from_slice(&[wave_normal, wave_normal, wave_normal, wave_normal]);
+
+            // Two triangles for the quad
+            indices.extend_from_slice(&[
+                wave_start_idx,
+                wave_start_idx + 2,
+                wave_start_idx + 1,
+                wave_start_idx + 1,
+                wave_start_idx + 2,
+                wave_start_idx + 3,
+            ]);
+        }
+
+        prev_z = Some(z);
+        prev_y_wave = Some(y_wave);
+    }
+
+    // Build waveform mesh
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_indices(Indices::U32(indices));
 
     mesh
 }

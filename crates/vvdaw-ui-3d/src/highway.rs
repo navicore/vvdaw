@@ -4,7 +4,7 @@
 //! - The road surface represents the timeline
 //! - Left/right walls represent stereo waveforms (guardrails)
 
-use crate::waveform::{WaveformData, WaveformMeshConfig, generate_channel_mesh};
+use crate::waveform::{WaveformData, WaveformMeshConfig, generate_channel_meshes};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
@@ -51,13 +51,21 @@ impl Plugin for HighwayPlugin {
     }
 }
 
-/// Marker component for left channel wall
+/// Marker component for left channel base wall
 #[derive(Component)]
-struct LeftWall;
+struct LeftWallBase;
 
-/// Marker component for right channel wall
+/// Marker component for left channel waveform
 #[derive(Component)]
-struct RightWall;
+struct LeftWaveform;
+
+/// Marker component for right channel base wall
+#[derive(Component)]
+struct RightWallBase;
+
+/// Marker component for right channel waveform
+#[derive(Component)]
+struct RightWaveform;
 
 /// Highway visual configuration
 const ROAD_WIDTH: f32 = 20.0;
@@ -69,12 +77,12 @@ fn setup_highway(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Grid road surface - dark gray
+    // Road surface - asphalt
     let road_mesh = meshes.add(Plane3d::new(Vec3::Y, Vec2::new(ROAD_WIDTH, ROAD_LENGTH)));
     let road_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.2, 0.2, 0.2), // Medium gray for visibility
+        base_color: Color::srgb(0.12, 0.12, 0.13), // Dark desaturated gray asphalt
         metallic: 0.0,
-        perceptual_roughness: 0.8,
+        perceptual_roughness: 0.85, // Rough asphalt surface
         ..default()
     });
 
@@ -86,41 +94,73 @@ fn setup_highway(
 
     // Spawn placeholder entities for waveform walls
     // Meshes will be generated when waveform data is loaded
-
-    // Left channel wall (placeholder) - bright green
     // Position at edge of road (ROAD_WIDTH is half_size, so full width is 2*ROAD_WIDTH)
-    // Offset by half the waveform width so inner edge aligns with road edge
+
+    let wall_position_left = -ROAD_WIDTH - 0.25;
+    let wall_position_right = ROAD_WIDTH + 0.25;
+
+    // Base wall material - dark concrete
+    let base_wall_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.15, 0.15, 0.16), // Dark gray concrete
+        metallic: 0.0,
+        perceptual_roughness: 0.7, // Painted concrete feel
+        ..default()
+    });
+
+    // Left channel base wall
     commands.spawn((
         Mesh3d(meshes.add(Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::RENDER_WORLD,
         ))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.0, 1.0, 0.0), // Pure bright green
-            metallic: 0.0,
-            perceptual_roughness: 1.0,
-            ..default()
-        })),
-        Transform::from_xyz(-ROAD_WIDTH - 0.25, 0.0, 0.0), // -20.25 for waveform width 0.5
-        LeftWall,
+        MeshMaterial3d(base_wall_material.clone()),
+        Transform::from_xyz(wall_position_left, 0.0, 0.0),
+        LeftWallBase,
     ));
 
-    // Right channel wall (placeholder) - bright red
-    // Position at edge of road (ROAD_WIDTH is half_size, so full width is 2*ROAD_WIDTH)
-    // Offset by half the waveform width so inner edge aligns with road edge
+    // Left channel waveform - industrial teal with emissive glow
     commands.spawn((
         Mesh3d(meshes.add(Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::RENDER_WORLD,
         ))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.0, 0.0), // Pure bright red
+            base_color: Color::srgb(0.1, 0.7, 0.6), // Bright industrial teal
             metallic: 0.0,
-            perceptual_roughness: 1.0,
+            perceptual_roughness: 0.3, // Smoother than base wall
+            emissive: bevy::color::LinearRgba::rgb(0.0, 0.2, 0.15), // Teal glow
             ..default()
         })),
-        Transform::from_xyz(ROAD_WIDTH + 0.25, 0.0, 0.0), // 20.25 for waveform width 0.5
-        RightWall,
+        Transform::from_xyz(wall_position_left, 0.0, 0.0),
+        LeftWaveform,
+    ));
+
+    // Right channel base wall
+    commands.spawn((
+        Mesh3d(meshes.add(Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        ))),
+        MeshMaterial3d(base_wall_material),
+        Transform::from_xyz(wall_position_right, 0.0, 0.0),
+        RightWallBase,
+    ));
+
+    // Right channel waveform - industrial amber with emissive glow
+    commands.spawn((
+        Mesh3d(meshes.add(Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        ))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.9, 0.5, 0.15), // Bright industrial amber
+            metallic: 0.0,
+            perceptual_roughness: 0.3, // Smoother than base wall
+            emissive: bevy::color::LinearRgba::rgb(0.25, 0.12, 0.0), // Amber glow
+            ..default()
+        })),
+        Transform::from_xyz(wall_position_right, 0.0, 0.0),
+        RightWaveform,
     ));
 }
 
@@ -134,8 +174,10 @@ fn update_waveform_meshes(
     playback: Res<crate::playback::PlaybackState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
-    left_query: Query<(Entity, &Mesh3d), With<LeftWall>>,
-    right_query: Query<(Entity, &Mesh3d), With<RightWall>>,
+    left_base_query: Query<(Entity, &Mesh3d), With<LeftWallBase>>,
+    left_wave_query: Query<(Entity, &Mesh3d), With<LeftWaveform>>,
+    right_base_query: Query<(Entity, &Mesh3d), With<RightWallBase>>,
+    right_wave_query: Query<(Entity, &Mesh3d), With<RightWaveform>>,
 ) {
     // Throttle mesh updates: only regenerate if position changed significantly
     // or if force update is requested (e.g., new file loaded)
@@ -167,30 +209,40 @@ fn update_waveform_meshes(
         ..Default::default()
     };
 
-    // Update left channel mesh
-    if let Ok((entity, _mesh_handle)) = left_query.single() {
-        let left_samples = waveform.left_channel();
-        let mesh = generate_channel_mesh(
-            &left_samples,
-            waveform.sample_rate,
-            current_position,
-            &config,
-        );
-        let new_handle = meshes.add(mesh);
-        commands.entity(entity).insert(Mesh3d(new_handle));
+    // Update left channel meshes
+    let left_samples = waveform.left_channel();
+    let (left_base_mesh, left_wave_mesh) = generate_channel_meshes(
+        &left_samples,
+        waveform.sample_rate,
+        current_position,
+        &config,
+        true, // is_left_wall = true
+    );
+
+    if let Ok((entity, _)) = left_base_query.single() {
+        commands.entity(entity).insert(Mesh3d(meshes.add(left_base_mesh)));
     }
 
-    // Update right channel mesh
-    if let Ok((entity, _mesh_handle)) = right_query.single() {
-        let right_samples = waveform.right_channel();
-        let mesh = generate_channel_mesh(
-            &right_samples,
-            waveform.sample_rate,
-            current_position,
-            &config,
-        );
-        let new_handle = meshes.add(mesh);
-        commands.entity(entity).insert(Mesh3d(new_handle));
+    if let Ok((entity, _)) = left_wave_query.single() {
+        commands.entity(entity).insert(Mesh3d(meshes.add(left_wave_mesh)));
+    }
+
+    // Update right channel meshes
+    let right_samples = waveform.right_channel();
+    let (right_base_mesh, right_wave_mesh) = generate_channel_meshes(
+        &right_samples,
+        waveform.sample_rate,
+        current_position,
+        &config,
+        false, // is_left_wall = false
+    );
+
+    if let Ok((entity, _)) = right_base_query.single() {
+        commands.entity(entity).insert(Mesh3d(meshes.add(right_base_mesh)));
+    }
+
+    if let Ok((entity, _)) = right_wave_query.single() {
+        commands.entity(entity).insert(Mesh3d(meshes.add(right_wave_mesh)));
     }
 
     // Update tracking and clear flags
